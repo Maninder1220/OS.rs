@@ -1,0 +1,42 @@
+# =============================================================================
+# File: Cargo.toml
+# Purpose:
+#   Declares the Rust package metadata, binaries, features, and dependency set used by OSAI Agent.
+#
+# Where this fits in OSAI:
+#   Cargo reads this file to build the web server, scanner, storage worker, Cognee ingest worker, and CLI ask binary.
+#
+# Topics to know before editing:
+#   TOML syntax, Cargo/config conventions, and OSAI runtime settings.
+#
+# Important operational notes:
+#   Dependency choices affect binary size, network/TLS behavior, async runtime support, and database/object-store compatibility.
+# =============================================================================
+[package]
+name = "osai-agent"
+version = "0.2.0"
+edition = "2021"
+description = "Rust-first local OS AI agent with scanner, history, rules, guarded actions, and dashboard"
+license = "MIT"
+
+[dependencies]
+anyhow = "1"
+axum = { version = "0.8", features = ["macros"] }
+bytes = "1"
+chrono = { version = "0.4", features = ["serde", "clock"] }
+clap = { version = "4", features = ["derive"] }
+dotenvy = "0.15"
+hex = "0.4"
+include_dir = "0.7"
+mime_guess = "2"
+object_store = { version = "0.13", features = ["aws"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+sysinfo = "0.39"
+tokio = { version = "1", features = ["full"] }
+tokio-postgres = { version = "0.7", features = ["with-serde_json-1"] }
+tower-http = { version = "0.6", features = ["trace", "cors"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

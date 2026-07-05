@@ -1,0 +1,42 @@
+# =============================================================================
+# File: packaging/systemd/osai-agent.service
+# Purpose:
+#   systemd service unit for running the OSAI web server as a managed Linux service.
+#
+# Where this fits in OSAI:
+#   Used by package installs or server deployments that do not run the Rust server manually.
+#
+# Topics to know before editing:
+#   systemd unit files, service lifecycle, environment files, and Linux deployment.
+#
+# Important operational notes:
+#   EnvironmentFile and ExecStart paths must match the installed RPM/deployment layout.
+# =============================================================================
+[Unit]
+Description=OSAI Agent local machine intelligence service
+Documentation=file:/usr/share/doc/osai-agent/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=osai
+Group=osai
+EnvironmentFile=-/etc/osai-agent/osai-agent.env
+ExecStart=/usr/bin/osai-agent \
+  --bind ${OSAI_BIND} \
+  --knowledge-dir /etc/osai-agent/knowledge \
+  --data-dir /var/lib/osai-agent \
+  --scan-interval-seconds ${OSAI_SCAN_INTERVAL_SECONDS}
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/var/lib/osai-agent
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target
