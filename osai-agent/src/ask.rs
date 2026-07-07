@@ -29,7 +29,9 @@ use tokio_postgres::{Client as PgClient, NoTls};
 use tracing::warn;
 
 use crate::{
+    ask_plan::{plan_question, AskPlan},
     collector::Snapshot,
+    fact_pack::{build_fact_pack, FactPack, FactPackSummary},
     intent::{analyze_question, build_deterministic_answer, QueryInsight},
     knowledge::{KnowledgeBase, KnowledgeMatch},
 };
@@ -53,6 +55,8 @@ pub struct AskResponse {
     pub llama_status: String,
     pub inference_status: InferenceStatus,
     pub query_insights: Vec<QueryInsight>,
+    pub ask_plan: AskPlan,
+    pub fact_pack_summary: FactPackSummary,
     pub knowledge_matches: Vec<KnowledgeMatch>,
     pub latest_scan: Option<LatestScanContext>,
 }
@@ -119,6 +123,7 @@ pub async fn ask_osai(
     let knowledge_matches = knowledge.search(&request.question, 6);
     let guidance = load_guidance(knowledge);
     let query_insights = analyze_question(&request.question, current_snapshot);
+    let ask_plan = plan_question(&request.question, current_snapshot);
     // Rust always prepares a complete deterministic answer first. This keeps
     // Ask OSAI useful even when Cognee, PostgreSQL, or llama.cpp is offline.
     let deterministic_answer =
@@ -137,11 +142,12 @@ pub async fn ask_osai(
     let mut cognee_context = "Cognee recall skipped.".to_string();
     let mut cognee_status = "skipped".to_string();
 
-    if settings.cognee_recall_with_ai_off || ai_requested {
+    if ask_plan.use_cognee && (settings.cognee_recall_with_ai_off || ai_requested) {
         // Cognee recall is treated as extra memory context. It should enrich an
         // answer, not replace current scanner facts or hide local failures.
+        let recall_query = build_recall_query(&ask_plan, current_snapshot);
         (cognee_context, cognee_status) =
-            match recall_cognee(&settings, &client, &request.question).await {
+            match recall_cognee(&settings, &client, &recall_query).await {
                 Ok(context) if context.trim().is_empty() => {
                     ("No Cognee context returned.".to_string(), "empty".to_string())
                 }
@@ -154,6 +160,9 @@ pub async fn ask_osai(
                     )
                 }
             };
+    } else if !ask_plan.use_cognee {
+        cognee_status = "skipped: ask plan did not need memory recall".to_string();
+        cognee_context = "Cognee recall skipped because Rust detected a simple live-status question.".to_string();
     }
 
     if ai_requested && inference_status.ready {
@@ -176,11 +185,15 @@ pub async fn ask_osai(
         postgres_status = "skipped: inference not ready".to_string();
     }
 
-    // The prompt is assembled from bounded, known pieces: user question,
-    // current snapshot, retrieved Markdown guidance, Cognee recall, and optional
-    // PostgreSQL latest-scan context.
+    let fact_pack = build_fact_pack(&ask_plan, current_snapshot, latest_scan.as_ref());
+    let fact_pack_summary = fact_pack.summary();
+
+    // The prompt is assembled from bounded, known pieces. AskPlan and FactPack
+    // are the main prompt-budget controls: Rust decides what facts are relevant
+    // before Cognee/Qwen see the question.
     let prompt = build_prompt(
-        &request.question,
+        &ask_plan,
+        &fact_pack,
         latest_scan.as_ref(),
         current_snapshot,
         &knowledge_matches,
@@ -189,8 +202,9 @@ pub async fn ask_osai(
         &query_insights,
         &inference_status,
     );
+    let llm_max_tokens = settings.llm_max_tokens.min(ask_plan.llm_max_tokens.max(80));
     let (answer, llama_status, mode, ai_used) = if ai_requested && inference_status.ready {
-        match ask_llama_cpp(&settings, &client, &prompt).await {
+        match ask_llama_cpp(&settings, &client, &prompt, llm_max_tokens).await {
             Ok(answer) if !answer.trim().is_empty() => (
                 answer,
                 "ok".to_string(),
@@ -240,6 +254,8 @@ pub async fn ask_osai(
         llama_status,
         inference_status,
         query_insights,
+        ask_plan,
+        fact_pack_summary,
         knowledge_matches,
         latest_scan,
     })
@@ -491,7 +507,7 @@ fn answer_with_cognee_recall(answer: String, cognee_context: &str, cognee_status
     .join("\n")
 }
 
-async fn ask_llama_cpp(settings: &Settings, client: &Client, prompt: &str) -> Result<String> {
+async fn ask_llama_cpp(settings: &Settings, client: &Client, prompt: &str, max_tokens: u64) -> Result<String> {
     let url = format!("{}/chat/completions", settings.llm_endpoint);
     let payload = json!({
         "model": settings.llm_model,
@@ -506,7 +522,7 @@ async fn ask_llama_cpp(settings: &Settings, client: &Client, prompt: &str) -> Re
             }
         ],
         "temperature": 0.2,
-        "max_tokens": settings.llm_max_tokens,
+        "max_tokens": max_tokens,
         "chat_template_kwargs": {
             "enable_thinking": false
         }
@@ -535,7 +551,8 @@ async fn ask_llama_cpp(settings: &Settings, client: &Client, prompt: &str) -> Re
 }
 
 fn build_prompt(
-    question: &str,
+    ask_plan: &AskPlan,
+    fact_pack: &FactPack,
     latest: Option<&LatestScanContext>,
     current_snapshot: &Snapshot,
     knowledge_matches: &[KnowledgeMatch],
@@ -606,10 +623,20 @@ fn build_prompt(
     };
     let inference_context = serde_json::to_string_pretty(inference_status)
         .unwrap_or_else(|_| "Inference status could not be serialized.".to_string());
+    let ask_plan_context = serde_json::to_string_pretty(ask_plan)
+        .unwrap_or_else(|_| "AskPlan could not be serialized.".to_string());
+    let fact_pack_context = serde_json::to_string_pretty(fact_pack)
+        .unwrap_or_else(|_| "FactPack could not be serialized.".to_string());
 
     [
         "# User Question".to_string(),
-        question.to_string(),
+        ask_plan.original_question.clone(),
+        String::new(),
+        "# Rust AskPlan".to_string(),
+        ask_plan_context,
+        String::new(),
+        "# Focused FactPack".to_string(),
+        fact_pack_context,
         String::new(),
         "# Inference And Reasoning Layer Status".to_string(),
         inference_context,
@@ -631,6 +658,7 @@ fn build_prompt(
         String::new(),
         "# Answer Rules".to_string(),
         "- Start conversationally with the direct answer to the user's question.".to_string(),
+        "- Use the Focused FactPack first. Treat broad Latest Facts as fallback context only.".to_string(),
         "- Stay focused on this machine, this project, and operational troubleshooting.".to_string(),
         "- Use sections: Current status, Why it matters, Evidence, Next safe checks, What I would do next.".to_string(),
         "- Prefer read-only checks first.".to_string(),
@@ -641,6 +669,19 @@ fn build_prompt(
         "- Explain seriousness in plain operator language: stable, needs attention, high risk, or critical.".to_string(),
     ]
     .join("\n")
+}
+
+fn build_recall_query(ask_plan: &AskPlan, current_snapshot: &Snapshot) -> String {
+    let intents = ask_plan
+        .intents
+        .iter()
+        .map(|intent| format!("{intent:?}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "host {} previous incidents repeated patterns resolved issues operational memory for intents: {} question: {}",
+        current_snapshot.host.hostname, intents, ask_plan.original_question
+    )
 }
 
 fn load_guidance(knowledge: &KnowledgeBase) -> String {

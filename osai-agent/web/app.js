@@ -81,6 +81,7 @@ const optionalViews = [
 let aiRequested = false;
 let aiState = "off";
 let currentSnapshot = null;
+let lastAskData = null;
 const pinnedInsights = new Map();
 
 // All API calls pass through this helper so token prompting and error handling
@@ -145,6 +146,7 @@ async function askReasoning() {
     body: JSON.stringify({ question, use_ai: aiRequested }),
   });
 
+  lastAskData = { question, ...data };
   updateAiFromAsk(data);
   updatePinnedInsights(data.query_insights || []);
   renderImportantList(currentSnapshot);
@@ -154,11 +156,78 @@ async function askReasoning() {
 
   $("reasonOutput").innerHTML = [
     inference,
+    renderAskPlan(data.ask_plan, data.fact_pack_summary),
     insights,
     item("Answer", `<pre>${escapeHtml(data.answer)}</pre>`),
+    renderFeedbackButtons(),
     item("Mode", escapeHtml(data.mode), `<div class="small">Model: ${escapeHtml(data.model)} • AI used: ${data.ai_used ? "yes" : "no"}</div>`),
     item("Context", `PostgreSQL: ${escapeHtml(data.postgres_status)} • Cognee: ${escapeHtml(data.cognee_status)} • llama.cpp: ${escapeHtml(data.llama_status)}`),
   ].join("");
+  await loadCogneeLifecycle();
+}
+
+function renderAskPlan(plan, summary) {
+  if (!plan || !summary) return "";
+  const intents = (plan.intents || []).join(", ") || "unknown";
+  return item(
+    "Rust AskPlan + FactPack",
+    `Detected: ${escapeHtml(intents)} • facts ${summary.fact_count || 0} • findings ${summary.finding_count || 0} • manual checks ${summary.manual_check_count || 0}`,
+    `<div class="small">Cognee recall: ${plan.use_cognee ? "planned" : "skipped"} • ${escapeHtml(plan.planning_note || "")}</div>`
+  );
+}
+
+function renderFeedbackButtons() {
+  return `<div class="item">
+    <strong>Improve Cognee memory</strong>
+    <span>Mark whether this answer helped. OSAI will remember feedback and try Cognee improve.</span>
+    <div class="feedback-row">
+      <button data-feedback="helpful">Helpful</button>
+      <button data-feedback="not helpful">Not helpful</button>
+      <button data-feedback="needs more detail">Needs more detail</button>
+      <button data-feedback="resolved" data-resolved="true">Resolved</button>
+      <button data-feedback="still failing">Still failing</button>
+    </div>
+  </div>`;
+}
+
+async function sendMemoryFeedback(feedback, resolved = false) {
+  if (!lastAskData) return;
+  const result = await apiFetch("/api/cognee/feedback", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      question: lastAskData.question,
+      answer: lastAskData.answer,
+      feedback,
+      resolved,
+      note: `mode=${lastAskData.mode}; ai_used=${lastAskData.ai_used}`,
+    }),
+  });
+  $("memoryLifecycleOutput").innerHTML = item("Feedback stored", result.detail, `<div class="small">Dataset: ${escapeHtml(result.dataset)}</div>`);
+}
+
+async function loadCogneeLifecycle() {
+  const status = await apiFetch("/api/cognee/lifecycle");
+  $("memoryLifecycleOutput").innerHTML = [
+    item("Lifecycle health", `${escapeHtml(status.health)} • ${escapeHtml(status.last_detail)}`),
+    item("Dataset", escapeHtml(status.dataset), `<div class="small">API: ${escapeHtml(status.api_url)}</div>`),
+    item("Operations", `Remember: ${escapeHtml(status.remember)} • Recall: ${escapeHtml(status.recall)}`),
+    item("Improve / Forget", `${escapeHtml(status.improve)} • ${escapeHtml(status.forget)}`),
+  ].join("");
+}
+
+async function forgetCogneeDataset() {
+  const ok = window.confirm("Forget the configured Cognee dataset? Use this only for cleanup, stale memory, noisy memory, or secret-removal workflows.");
+  if (!ok) return;
+  const result = await apiFetch("/api/cognee/forget", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      confirm: true,
+      reason: "operator requested forget from OSAI dashboard",
+    }),
+  });
+  $("memoryLifecycleOutput").innerHTML = item("Forget result", result.detail, `<div class="small">Dataset: ${escapeHtml(result.dataset)}</div>`);
 }
 
 function renderQueryInsights(insights) {
@@ -494,6 +563,8 @@ $("aiToggleBtn").addEventListener("click", () => {
   aiState = aiRequested ? "requested" : "off";
   updateAiButton();
 });
+$("memoryRefreshBtn").addEventListener("click", () => loadCogneeLifecycle().catch(showError));
+$("forgetDatasetBtn").addEventListener("click", () => forgetCogneeDataset().catch(showError));
 $("quickAsk").addEventListener("click", (event) => {
   const query = event.target.getAttribute("data-query");
   if (!query) return;
@@ -512,6 +583,11 @@ $("actionsList").addEventListener("click", (event) => {
   if (runId) runAction(runId).catch(showError);
 });
 $("reasonOutput").addEventListener("click", (event) => {
+  const feedback = event.target.getAttribute("data-feedback");
+  if (feedback) {
+    sendMemoryFeedback(feedback, event.target.getAttribute("data-resolved") === "true").catch(showError);
+    return;
+  }
   const query = event.target.getAttribute("data-query");
   if (!query) return;
   $("reasonQuestion").value = query;
@@ -531,6 +607,7 @@ function showError(err) {
 
 loadSnapshot(false).catch(showError);
 loadActions().catch(showError);
+loadCogneeLifecycle().catch(showError);
 renderQuickAsk();
 renderViewButtons();
 updateAiButton();

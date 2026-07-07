@@ -18,7 +18,10 @@
 
 mod actions;
 mod ask;
+mod ask_plan;
 mod collector;
+mod cognee_lifecycle;
+mod fact_pack;
 mod history;
 mod intent;
 mod knowledge;
@@ -43,6 +46,10 @@ use axum::{
     Json, Router,
 };
 use clap::Parser;
+use cognee_lifecycle::{
+    CogneeLifecycleClient, CogneeLifecycleStatus, ForgetMemoryRequest, ForgetMemoryResponse,
+    MemoryFeedbackRequest, MemoryFeedbackResponse,
+};
 use history::{HistoryRecord, HistoryStore, HistorySummary};
 use include_dir::{include_dir, Dir};
 use reasoning::{reason_about, ReasonRequest, ReasonResponse};
@@ -198,6 +205,9 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/knowledge/{name}", get(read_knowledge))
         .route("/api/reason", post(reason))
         .route("/api/ask", post(ask))
+        .route("/api/cognee/lifecycle", get(cognee_lifecycle_status))
+        .route("/api/cognee/feedback", post(cognee_feedback))
+        .route("/api/cognee/forget", post(cognee_forget))
         .route("/api/plugins", get(plugins))
         .route("/api/actions", get(list_actions))
         .route("/api/actions/propose", post(propose_action))
@@ -317,6 +327,35 @@ async fn ask(
         .await
         .map(Json)
         .map_err(internal_error)
+}
+
+async fn cognee_lifecycle_status(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> ApiResult<CogneeLifecycleStatus> {
+    verify_api_auth(&headers, &state)?;
+    let client = CogneeLifecycleClient::from_env().map_err(internal_error)?;
+    Ok(Json(client.health_check().await))
+}
+
+async fn cognee_feedback(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<MemoryFeedbackRequest>,
+) -> ApiResult<MemoryFeedbackResponse> {
+    verify_api_auth(&headers, &state)?;
+    let client = CogneeLifecycleClient::from_env().map_err(internal_error)?;
+    Ok(Json(client.remember_feedback(request).await))
+}
+
+async fn cognee_forget(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<ForgetMemoryRequest>,
+) -> ApiResult<ForgetMemoryResponse> {
+    verify_api_auth(&headers, &state)?;
+    let client = CogneeLifecycleClient::from_env().map_err(internal_error)?;
+    Ok(Json(client.forget_memory(request).await))
 }
 
 async fn plugins(State(state): State<AppState>, headers: HeaderMap) -> ApiResult<PluginResponse> {

@@ -227,6 +227,19 @@ button:hover,
   margin-bottom: 16px;
 }
 
+.memory-actions,
+.feedback-row {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 10px 0;
+}
+
+.danger-button {
+  color: #fecdd3;
+  border-color: rgba(251, 113, 133, .45);
+}
+
 .quick-chip,
 .view-toggle {
   padding: 9px 12px;

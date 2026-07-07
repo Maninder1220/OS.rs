@@ -16,4 +16,9 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
+
+# The storage worker writes objects into the osai-agent bucket. Make the helper
+# idempotently create/verify that bucket first so fresh RustFS volumes do not
+# fail with NoSuchBucket on the first PUT.
+./scripts/ensure-rustfs-bucket.sh
 cargo run --bin osai-storage-worker -- "$@"

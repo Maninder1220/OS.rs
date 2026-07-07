@@ -240,7 +240,10 @@ async fn send_to_cognee(settings: &Settings, client: &Client, memory: &PendingMe
         memory.outbox_id,
         sanitize_file_component(&memory.scan_id)
     );
-    let memory_file = multipart::Part::bytes(memory.content.clone().into_bytes())
+    // Redact before sending to Cognee. Raw local evidence remains in
+    // PostgreSQL/RustFS, but long-term AI memory should not retain secrets.
+    let redacted_content = redact_secret_like_text(&memory.content);
+    let memory_file = multipart::Part::bytes(redacted_content.into_bytes())
         .file_name(file_name)
         .mime_str("text/markdown")
         .context("failed to build Cognee memory upload part")?;
@@ -278,6 +281,29 @@ fn sanitize_file_component(value: &str) -> String {
             }
         })
         .collect()
+}
+
+fn redact_secret_like_text(input: &str) -> String {
+    input
+        .lines()
+        .map(|line| {
+            let lower = line.to_ascii_lowercase();
+            if lower.contains("password=")
+                || lower.contains("token=")
+                || lower.contains("api_key")
+                || lower.contains("authorization:")
+                || lower.contains("bearer ")
+                || lower.contains("private key")
+                || lower.contains("secret_key")
+                || lower.contains("access_key")
+            {
+                "[REDACTED secret-like line]".to_string()
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 async fn mark_ingested(pg: &PgClient, outbox_id: i64) -> Result<()> {

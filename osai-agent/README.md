@@ -15,6 +15,7 @@ The current project is intentionally split into Rust binaries plus Docker servic
 ```text
 Rust binaries:
   osai-agent             = scanner + dashboard + API + guarded actions
+  osai-all               = one-command supervisor for agent + storage worker + Cognee ingest
   osai-storage-worker    = PostgreSQL + RustFS persistence worker
   osai-cognee-ingest     = pushes pending memory rows into Cognee REST
   osai-ask               = recalls Cognee memory + asks llama.cpp/Qwen
@@ -69,6 +70,9 @@ The Markdown memory file is the preferred input for Cognee because it has headin
 - Push useful Markdown memory rows to Cognee over REST as uploaded `.md` files. Raw scans are stored every cycle, while Cognee receives first scan, changed state, important state refreshes, and periodic summaries.
 - Ask local Qwen via llama.cpp using PostgreSQL facts plus recalled Cognee memory. AI is a refinement layer; Rust remains the source of truth.
 - Ask OSAI from the browser dashboard through `/api/ask`, without using the llama.cpp UI directly.
+- Run the complete local Rust runtime with one command through `osai-all`, which starts Docker support services, runs RustFS bucket initialization, then supervises `osai-agent`, `osai-storage-worker`, and `osai-cognee-ingest`.
+- Use an AskPlan + FactPack path so Rust detects intent first and sends Qwen only focused facts.
+- Expose a Cognee memory lifecycle panel for remember, recall, improve-feedback, forget, and health visibility.
 
 ## Project structure
 
@@ -146,6 +150,67 @@ Start in this order:
 4. osai-cognee-ingest
 5. Browser Ask OSAI or osai-ask CLI
 ```
+
+## One-command Rust runtime
+
+After building release binaries, you can run the Rust side with one supervisor:
+
+```bash
+cargo build --release
+RUST_LOG=info ./target/release/osai-all
+```
+
+`osai-all` performs these steps:
+
+```text
+1. docker compose -f docker-compose.storage.yml up -d --build postgres rustfs llama cognee
+2. docker compose -f docker-compose.storage.yml up rustfs-init
+3. start target/release/osai-agent
+4. start target/release/osai-storage-worker
+5. start target/release/osai-cognee-ingest
+```
+
+This keeps the individual binaries available for debugging, but gives operators one command for the normal full flow.
+
+## AskPlan + FactPack
+
+Ask OSAI now plans before it prompts:
+
+```text
+User question -> Rust AskPlan -> focused FactPack -> optional Cognee recall -> optional Qwen refinement
+```
+
+Examples:
+
+```text
+"what my cpu doing"       -> CPU FactPack only
+"what about ram"          -> memory FactPack only
+"what is update service"  -> service/process/database FactPack
+"whats the update"        -> compact server overview
+```
+
+This reduces prompt size, lowers Qwen CPU/RAM pressure, and keeps Rust as the source of truth.
+
+## Cognee memory lifecycle
+
+OSAI now exposes Cognee lifecycle APIs and UI:
+
+```text
+GET  /api/cognee/lifecycle  = memory health/status
+POST /api/cognee/feedback   = remember answer feedback and attempt improve
+POST /api/cognee/forget     = confirmed dataset forget request
+```
+
+The dashboard shows:
+
+```text
+Remember: active through memory outbox and feedback
+Recall: planned by AskPlan only when useful
+Improve: best-effort after operator feedback
+Forget: guarded by confirmation
+```
+
+Before memory is sent to Cognee, secret-like lines containing tokens, passwords, API keys, bearer authorization, access keys, secret keys, or private keys are redacted.
 
 Dependency map:
 

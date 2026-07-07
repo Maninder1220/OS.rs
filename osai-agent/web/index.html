@@ -34,6 +34,7 @@
       <nav>
         <a href="#overview" class="active">Overview</a>
         <a href="#reasoning">Reasoning</a>
+        <a href="#memoryLifecycle">Memory</a>
         <a href="#important">Important</a>
         <a href="#viewPicker">Add Views</a>
         <a href="#history">History</a>
@@ -78,6 +79,18 @@
         </div>
         <div id="quickAsk" class="quick-ask"></div>
         <div id="reasonOutput" class="list"></div>
+      </section>
+
+      <section id="memoryLifecycle" class="panel">
+        <div class="panel-title">
+          <h3>Cognee Memory Lifecycle</h3>
+          <p>Remember, recall, improve, and forget controls for OSAI memory.</p>
+        </div>
+        <div class="memory-actions">
+          <button id="memoryRefreshBtn">Refresh memory status</button>
+          <button id="forgetDatasetBtn" class="danger-button">Forget dataset</button>
+        </div>
+        <div id="memoryLifecycleOutput" class="list"></div>
       </section>
 
       <section id="important" class="panel">

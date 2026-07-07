@@ -94,7 +94,7 @@ services:
       - "--alias"
       - "osai-llm"
       - "-c"
-      - "2048"
+      - "4096"
       - "--parallel"
       - "1"
       - "--threads"
