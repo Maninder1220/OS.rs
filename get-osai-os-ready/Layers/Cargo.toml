@@ -1,0 +1,13 @@
+[package]
+name = "osai-infra-start"
+version = "0.1.0"
+edition = "2021"
+
+# This tool intentionally uses only Rust's standard library.
+# Why:
+# - faster first compile on a fresh VM
+# - fewer dependency downloads
+# - easier to audit and learn
+# - good enough for env editing, prompts, checks, and command orchestration
+
+[dependencies]
