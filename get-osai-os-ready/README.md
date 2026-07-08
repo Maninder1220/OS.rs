@@ -1,161 +1,215 @@
-# OSAI OS Readiness Kit
+# get-osai-os-ready
 
-This kit prepares a fresh Ubuntu, Red Hat, or AlmaLinux server so the OSAI app stack can fit in cleanly.
+`get-osai-os-ready` prepares a fresh Linux server for the OSAI app and then verifies/builds the OSAI Rust binaries.
 
-It was prepared from the attached architecture resources:
+This kit has two layers:
 
-- OSAI uses Rust as the scanner/API/control plane.
-- Docker Compose runs supporting services.
-- Postgres stores structured facts and metadata.
-- RustFS or MinIO-style object storage stores raw JSON, Markdown memory, logs, and evidence.
-- Cognee handles memory and retrieval.
-- llama.cpp runs the local Qwen GGUF model.
-- OpenTelemetry sends traces, metrics, and logs toward SigNoz.
+1. `startersv.sh` prepares the operating system.
+2. `src/main.rs` verifies the OSAI app path, checks the GGUF model, and builds release binaries.
 
-## Files
+It does **not** start the full OSAI stack automatically. Docker Compose startup and `osai-all` startup stay manual so you can review `.env` values first.
 
-- `bootstrap-osai-host.sh` - install, status, and doctor script.
-- `README.md` - this operator guide.
-
-## Recommended First Run
-
-For a normal app-ready host:
-
-```bash
-sudo bash bootstrap-osai-host.sh install
-```
-
-For a host where you will compile Rust on the server:
-
-```bash
-sudo bash bootstrap-osai-host.sh install --with-rust
-```
-
-For a host that should also run SigNoz locally:
-
-```bash
-sudo bash bootstrap-osai-host.sh install --with-signoz
-```
-
-For a public/lab VM where you intentionally want local app ports opened:
-
-```bash
-sudo bash bootstrap-osai-host.sh install --open-local-firewall
-```
-
-The safer default is to keep ports private and use SSH/IAP tunnels.
-
-## End Status Check
-
-Run:
-
-```bash
-sudo bash bootstrap-osai-host.sh status
-```
-
-Expected important checks:
-
-- Docker service is active.
-- Docker Compose v2 is available.
-- `/opt/osai/config/osai.env` exists.
-- `/opt/osai/models` exists for the GGUF model.
-- OTel Collector service is active if OTel was not disabled.
-
-For deeper troubleshooting:
-
-```bash
-sudo bash bootstrap-osai-host.sh doctor
-```
-
-## What The Script Installs
-
-Base packages:
-
-- `curl`, `git`, `tar`, `unzip`, `jq`
-- compiler/build tools
-- OpenSSL development headers
-- networking/process inspection tools
-- `firewalld` on Red Hat/AlmaLinux or `ufw` on Ubuntu
-
-Runtime:
-
-- Docker Engine
-- Docker Compose v2 plugin
-- optional Rust toolchain through rustup
-- optional SigNoz using Foundry
-- optional lightweight OpenTelemetry Collector
-
-## Directory Layout
-
-The script creates:
+## Folder structure
 
 ```text
-/opt/osai/
-  app/
-  config/osai.env
-  data/
-  logs/
-  models/
-  otel/
-  signoz/
+get-osai-os-ready/
+├── Layers/
+│   ├── Cargo.toml
+│   ├── src/
+│   │   └── main.rs
+│   └── startersv.sh
+└── README.md
 ```
 
-Put the local Qwen model here:
+## File responsibilities
+
+### `Layers/startersv.sh`
+
+Stage 1 OS preparation script.
+
+It does:
+
+- detects Ubuntu/Debian or RHEL-family Linux
+- installs base tools like `git`, `curl`, `jq`, compilers, OpenSSL headers, and network/process tools
+- installs Docker Engine and the Docker Compose plugin
+- creates a dedicated `osai` deploy user
+- installs Rust under `/home/osai`, not under `/root`
+- clones or updates the OSAI repo into `/opt/osai/OS.rs`
+- creates `.env.storage` and `.env.cognee` from repo examples if they are missing
+- downloads the Qwen GGUF model into `/opt/osai/OS.rs/osai-agent/models`
+- fixes ownership so `/opt/osai` belongs to the `osai` user
+- runs readiness checks
+
+It does not:
+
+- open firewall ports unless `FIREWALL_OPEN=1` is set
+
+### `Layers/src/main.rs`
+
+Stage 2 Rust build helper.
+
+It does:
+
+- reads `BASE_DIR`, `REPO_DIR`, `APP_DIR`, and `MODEL_FILE` from environment variables or uses defaults
+- verifies `/opt/osai/OS.rs/osai-agent` exists
+- verifies `Cargo.toml` exists in the OSAI app
+- verifies the Qwen GGUF model exists and is not empty
+- checks the `GGUF` file header
+- runs `cargo build --release` inside the real OSAI app directory
+- prints manual next commands
+
+
+## Why the `osai` user is important
+
+The script creates a dedicated deploy user:
+
+```bash
+osai
+```
+
+Use this user for app work:
+
+```bash
+sudo -iu osai
+```
+
+The `osai` user owns:
 
 ```text
-/opt/osai/models/Qwen3-4B-Q4_K_M.gguf
+/opt/osai
+/home/osai/.cargo
+/home/osai/.rustup
 ```
 
-## Default Local Ports
+This keeps Rust builds, model files, and app files away from root.
 
-| Port | Service |
-|---:|---|
-| 8000 | OSAI Rust API/dashboard |
-| 8001 | Cognee REST API |
-| 8080 | llama.cpp or SigNoz UI, depending on your compose setup |
-| 9000 | RustFS/MinIO S3-compatible API |
-| 9001 | RustFS/MinIO console |
-| 14317 | local OTel gRPC receiver |
-| 14318 | local OTel HTTP receiver |
-| 13133 | local OTel health endpoint |
-| 4317 | SigNoz OTLP gRPC ingest |
-| 4318 | SigNoz OTLP HTTP ingest |
+Use root or your cloud admin user only for OS-level work like installing packages, changing firewall rules, or managing system services.
 
-Avoid exposing `4317`, `4318`, model ports, database ports, or object storage ports publicly.
+Do not run this from inside the `osai` shell:
 
-## Browser Error You Pasted
+```bash
+sudo some-command
+```
 
-The error:
+The `osai` user is not meant to be a sudo/admin user and normally has no password. If you need root, exit back to your normal admin user first:
+
+```bash
+exit
+```
+
+Then run the sudo command from your admin user.
+
+## Stage 1: prepare the OS
+
+From the project folder:
+
+```bash
+cd get-osai-os-ready/Layers
+chmod +x startersv.sh
+sudo bash startersv.sh
+```
+
+Useful options:
+
+```bash
+# Skip the large model download
+DOWNLOAD_MODEL=0 sudo bash startersv.sh
+
+# Skip cargo check during OS preparation
+RUN_CARGO_CHECK=0 sudo bash startersv.sh
+
+# Open common local app ports in firewalld
+FIREWALL_OPEN=1 sudo bash startersv.sh
+
+# Treat Docker Compose config failure as fatal
+STRICT_COMPOSE_CHECK=1 sudo bash startersv.sh
+```
+
+Default installed/cloned paths:
 
 ```text
-QuotaExceededError: Failed to execute 'setItem' on 'Storage'
+BASE_DIR=/opt/osai
+REPO_DIR=/opt/osai/OS.rs
+APP_DIR=/opt/osai/OS.rs/osai-agent
+MODEL_DIR=/opt/osai/OS.rs/osai-agent/models
+MODEL_FILE=Qwen3-4B-Q4_K_M.gguf
 ```
 
-is a browser-side ChatGPT local storage/cache issue. It means the browser storage quota for `chatgpt.com` is full. It is not an OSAI server error.
+## Stage 2: run the Rust build helper
 
-Fix on Chrome/Edge:
+Make the kit available to the `osai` user. One clean way is to copy it under `/opt/osai`:
 
-1. Open `chrome://settings/siteData`.
-2. Search `chatgpt.com`.
-3. Delete site data for ChatGPT.
-4. Reload ChatGPT and sign in again if asked.
+```bash
+sudo cp -r get-osai-os-ready /opt/osai/get-osai-os-ready
+sudo chown -R osai:osai /opt/osai/get-osai-os-ready
+```
 
-The preload warning for `page-table-row-...css` is also browser-side and usually harmless.
+Switch to the deploy user:
 
-## Production Notes
+```bash
+sudo -iu osai
+```
 
-For GCP or any cloud VM, prefer:
+Run the Rust helper:
 
-- private VM by default
-- outbound NAT for package/model downloads
-- SSH tunnel or IAP tunnel for UI access
-- no public firewall for SigNoz ingest ports
-- pinned Docker image versions once the demo is stable
-- pre-baked image later, instead of installing everything on each boot
+```bash
+cd /opt/osai/get-osai-os-ready/Layers
+source ~/.cargo/env
+cargo run --release
+```
 
-For OSAI, the good production shape is:
+The helper builds the real OSAI app at:
 
-1. Bash/OpenTofu prepares the OS and VM.
-2. Docker Compose starts Postgres, RustFS, Cognee, llama.cpp, and optional SigNoz.
-3. Rust binary runs the agent/scanner/API.
-4. OTel/SigNoz show traces, metrics, logs, and AI workflow latency.
+```text
+/opt/osai/OS.rs/osai-agent
+```
+
+## Manual commands after Stage 2
+
+Go to the real OSAI app:
+
+```bash
+cd /opt/osai/OS.rs/osai-agent
+```
+
+Review env files:
+
+```bash
+ls -la .env.storage .env.cognee
+nano .env.storage
+nano .env.cognee
+```
+
+
+Check supported `osai-all` options:
+
+```bash
+./target/release/osai-all --help
+```
+
+Start OSAI manually with a token:
+
+```bash
+export OSAI_AGENT_TOKEN="replace-with-a-long-random-token"
+RUST_LOG=info ./target/release/osai-all
+```
+
+Do not use an unsupported flag. If `--help` does not show a flag, do not pass it.
+
+## Environment overrides
+
+Both files use the same default path values.
+
+```bash
+BASE_DIR=/custom/base
+REPO_DIR=/custom/base/OS.rs
+APP_DIR=/custom/base/OS.rs/osai-agent
+MODEL_FILE=Qwen3-4B-Q4_K_M.gguf
+```
+
+Example:
+
+```bash
+APP_DIR=/opt/osai/OS.rs/osai-agent cargo run --release
+```
+

@@ -1,7 +1,8 @@
 [package]
-name = "osai-infra-start"
+name = "get-osai-os-ready"
 version = "0.1.0"
 edition = "2021"
+
 
 # This tool intentionally uses only Rust's standard library.
 # Why:
