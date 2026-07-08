@@ -1,0 +1,24 @@
+# =============================================================================
+# File: config/osai-agent.toml
+# Purpose:
+#   Example runtime configuration for the OSAI web server and scanner.
+#
+# Where this fits in OSAI:
+#   Documents expected server bind address, scan interval, data directory, and action policy defaults.
+#
+# Topics to know before editing:
+#   TOML syntax, Cargo/config conventions, and OSAI runtime settings.
+#
+# Important operational notes:
+#   Environment variables and CLI flags may still override runtime behavior depending on the binary path.
+# =============================================================================
+# OSAI Agent example config notes.
+# The current binary uses CLI args and environment variables.
+# This file is kept as an operator reference and future config target.
+
+# bind = "127.0.0.1:8000"
+# scan_interval_seconds = 30
+# knowledge_dir = "knowledge"
+# data_dir = "data"
+# api_token_env = "OSAI_AGENT_TOKEN"
+# mode = "guarded"

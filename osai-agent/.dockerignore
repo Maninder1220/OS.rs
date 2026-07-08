@@ -1,0 +1,79 @@
+# =============================================================================
+# File: .dockerignore
+# Purpose:
+#   Controls what files enter normal Docker build contexts.
+#
+# Where this fits in OSAI:
+#   Protects regular image builds from accidentally copying large GGUF models, local state, secrets, or build artifacts.
+#
+# Topics to know before editing:
+#   Docker/Git ignore patterns and build context hygiene.
+#
+# Important operational notes:
+#   The baked-model build uses docker/llama-model/Dockerfile.dockerignore for its special GGUF-copy path.
+# =============================================================================
+# Git and editor state
+.git
+.gitignore
+.vscode
+.idea
+.DS_Store
+
+# Rust build output
+target
+debug
+release
+
+# Secrets and local env
+.env
+.env.*
+secrets
+*.key
+*.pem
+*.crt
+*.p12
+*.pfx
+
+# Runtime data
+data
+logs
+*.log
+*.jsonl
+*.sqlite
+*.sqlite3
+*.db
+
+# Models must not enter normal Docker build contexts.
+# The optional model-image build uses docker/llama-model/Dockerfile.dockerignore
+# to allow one selected GGUF into that specific build only.
+models/*.gguf
+models/**/*.gguf
+models/*.safetensors
+models/**/*.safetensors
+models/*.bin
+models/**/*.bin
+models/*.onnx
+models/**/*.onnx
+models/*.pt
+models/**/*.pt
+models/*.pth
+models/**/*.pth
+
+# Python/node caches
+.venv
+venv
+.venv-storage
+__pycache__
+.pytest_cache
+.mypy_cache
+.ruff_cache
+node_modules
+
+# Generated packages/backups
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.dump
+*.backup
+*.bak

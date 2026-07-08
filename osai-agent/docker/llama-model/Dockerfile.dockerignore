@@ -1,0 +1,22 @@
+# =============================================================================
+# File: docker/llama-model/Dockerfile.dockerignore
+# Purpose:
+#   Restricts the baked-model Docker build context to only files needed for the special GGUF-copy image.
+#
+# Where this fits in OSAI:
+#   Works with docker/llama-model/Dockerfile to avoid accidentally sending unrelated project files to Docker.
+#
+# Topics to know before editing:
+#   Docker/Git ignore patterns and build context hygiene.
+#
+# Important operational notes:
+#   Keep this stricter than normal build context rules because the model image is intentionally large.
+# =============================================================================
+# Ignore everything by default so the model-image build does not send source,
+# secrets, caches, or runtime data to Docker.
+*
+
+# Re-include only GGUF model files. This special build context is used only
+# when intentionally baking a model into the image.
+!models/
+!models/*.gguf

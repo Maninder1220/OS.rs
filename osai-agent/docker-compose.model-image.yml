@@ -1,0 +1,141 @@
+# =============================================================================
+# File: docker-compose.model-image.yml
+# Purpose:
+#   Starts the local OSAI support stack with the GGUF model baked into the llama.cpp image.
+#
+# Where this fits in OSAI:
+#   Best deployment mode when one complete inference image should be moved to another server or registry.
+#
+# Topics to know before editing:
+#   Docker Compose services, networks, volumes, health checks, and environment interpolation.
+#
+# Important operational notes:
+#   The GGUF must exist locally during docker build so Docker can COPY it into the image layer.
+# =============================================================================
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: osai-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres_admin_password
+      POSTGRES_DB: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - osai-postgres-data:/var/lib/postgresql/data
+      - ./storage/postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  rustfs:
+    image: rustfs/rustfs:latest
+    container_name: osai-rustfs
+    restart: unless-stopped
+    command: ["--address", ":9000", "--console-enable", "--access-key", "rustfsadmin", "--secret-key", "rustfsadmin", "/data"]
+    environment:
+      RUSTFS_ADDRESS: ":9000"
+      RUSTFS_ACCESS_KEY: rustfsadmin
+      RUSTFS_SECRET_KEY: rustfsadmin
+      RUSTFS_CONSOLE_ENABLE: "true"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - osai-rustfs-data:/data
+
+  rustfs-init:
+    image: minio/mc:RELEASE.2025-05-21T01-59-54Z
+    container_name: osai-rustfs-init
+    depends_on:
+      rustfs:
+        condition: service_started
+    entrypoint: ["/bin/sh", "-c"]
+    command: |
+      set -eu
+      until mc alias set rustfs http://rustfs:9000 rustfsadmin rustfsadmin >/dev/null 2>&1; do
+        echo waiting for rustfs
+        sleep 2
+      done
+      mc mb --ignore-existing rustfs/osai-agent
+      mc ls rustfs
+    restart: "no"
+
+  llama:
+    build:
+      context: .
+      dockerfile: docker/llama-model/Dockerfile
+      args:
+        MODEL_FILE: ${OSAI_GGUF_MODEL_FILE:-Qwen3-4B-Q4_K_M.gguf}
+    image: osai-llama-qwen-with-model:local
+    container_name: osai-llama
+    restart: unless-stopped
+    # This mode contains /models/Qwen3-4B-Q4_K_M.gguf inside the image. There is
+    # no host model mount and no runtime model download.
+    ports:
+      - "8080:8080"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    command:
+      - "-m"
+      - "/models/${OSAI_GGUF_MODEL_FILE:-Qwen3-4B-Q4_K_M.gguf}"
+      - "--mmap"
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "8080"
+      - "--alias"
+      - "osai-llm"
+      - "-c"
+      - "2048"
+      - "--parallel"
+      - "1"
+      - "--threads"
+      - "4"
+      - "--threads-batch"
+      - "4"
+
+  cognee:
+    build:
+      context: .
+      dockerfile: docker/cognee/Dockerfile
+    container_name: osai-cognee
+    restart: unless-stopped
+    env_file:
+      - .env.cognee
+    environment:
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      SYSTEM_ROOT_DIRECTORY: /data/cognee_system
+      DATA_ROOT_DIRECTORY: /data/cognee_data
+      LLM_ENDPOINT: http://llama:8080/v1
+      OSAI_LLM_ENDPOINT: http://llama:8080/v1
+      REQUIRE_AUTHENTICATION: "false"
+      ENABLE_BACKEND_ACCESS_CONTROL: "false"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "8001:8001"
+    volumes:
+      - osai-cognee-data:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      llama:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/docs', timeout=5)\" || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+
+volumes:
+  osai-postgres-data:
+  osai-rustfs-data:
+  osai-cognee-data:
