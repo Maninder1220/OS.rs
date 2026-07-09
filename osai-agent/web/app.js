@@ -1,18 +1,19 @@
 // =============================================================================
 // File: web/app.js
 // Purpose:
-//   Browser-side controller for dashboard polling, Ask OSAI, history, knowledge, plugins, and actions.
+//   Browser-side controller for dashboard polling, Ask OSAI, history, knowledge,
+//   plugins, actions, card closing, sidebar collapsing, and Keep eyes on pinning.
 //
 // Where this fits in OSAI:
-//   Connects the HTML UI to the Rust REST API.
-//
-// Topics to know before editing:
-//   Browser DOM APIs, fetch(), event handling, and the OSAI REST API.
-//
-// Important operational notes:
-//   Frontend state should match API response shapes from src/main.rs and src/ask.rs.
+//   Connects the HTML UI to the Rust REST API. No Rust API contract is changed.
 // =============================================================================
 const $ = (id) => document.getElementById(id);
+
+const STORAGE_KEYS = {
+  watch: "osaiKeepEyesOn.v1",
+  hidden: "osaiHiddenSections.v1",
+  sidebar: "osaiSidebarCollapsed.v1",
+};
 
 function bytes(value) {
   if (!Number.isFinite(value)) return "0 B";
@@ -31,10 +32,6 @@ function pct(value) {
   return `${value.toFixed(1)}%`;
 }
 
-function item(title, detail, extra = "") {
-  return `<div class="item"><strong>${title}</strong><span>${detail}</span>${extra}</div>`;
-}
-
 function escapeHtml(value) {
   return String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -44,13 +41,34 @@ function escapeHtml(value) {
     .replaceAll("'", "&#039;");
 }
 
+function compactText(value, max = 170) {
+  const text = String(value ?? "").replace(/\s+/g, " ").trim();
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
 function chip(text, className = "") {
-  return `<span class="chip ${className}">${text}</span>`;
+  return `<span class="chip ${className}">${escapeHtml(text)}</span>`;
 }
 
 function bar(value) {
   const safe = Math.max(0, Math.min(100, value || 0));
   return `<div class="progress"><div style="width:${safe}%"></div></div>`;
+}
+
+function item(title, detail, extra = "") {
+  return `<div class="item" data-watch-title="${escapeHtml(title)}">
+    <strong>${title}</strong>
+    <span>${detail}</span>
+    ${extra}
+  </div>`;
+}
+
+function card(title, metric, detail) {
+  return `<div class="card metric-card" data-watch-title="${escapeHtml(title)}">
+    <p>${escapeHtml(title)}</p>
+    <div class="metric">${escapeHtml(metric)}</div>
+    <p>${escapeHtml(detail)}</p>
+  </div>`;
 }
 
 function authHeaders() {
@@ -83,9 +101,22 @@ let aiState = "off";
 let currentSnapshot = null;
 let lastAskData = null;
 const pinnedInsights = new Map();
+let keepEyesItems = loadJson(STORAGE_KEYS.watch, []);
+let hiddenSections = new Set(loadJson(STORAGE_KEYS.hidden, []));
 
-// All API calls pass through this helper so token prompting and error handling
-// stay consistent across scan, history, Ask OSAI, and guarded action views.
+function loadJson(key, fallback) {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : fallback;
+  } catch (_) {
+    return fallback;
+  }
+}
+
+function saveJson(key, value) {
+  localStorage.setItem(key, JSON.stringify(value));
+}
+
 async function apiFetch(endpoint, options = {}) {
   const headers = {
     ...authHeaders(),
@@ -121,9 +152,10 @@ async function loadHistory() {
   $("historyList").innerHTML = history.length
     ? history.map((h) => item(
         `${severity(h.highest_severity)} ${new Date(h.generated_at).toLocaleString()}`,
-        `${h.hostname} • findings ${h.finding_count} • warn ${h.warn_count} • critical ${h.critical_count}`
+        `${escapeHtml(h.hostname)} • findings ${h.finding_count} • warn ${h.warn_count} • critical ${h.critical_count}`
       )).join("")
     : item("No scan history", "A history record is created after each scan.");
+  decorateCards($("historyList"));
 }
 
 async function askReasoning() {
@@ -134,12 +166,11 @@ async function askReasoning() {
   $("reasonOutput").innerHTML = item(
     "Working",
     aiRequested
-      ? "Rust is planning the intent and building a focused FactPack first. AI will refine only if the reasoning layer is ready."
-      : "Rust is planning the intent and building a focused FactPack. AI is off."
+      ? "Rust is preparing a focused answer. AI will refine only if the reasoning layer is ready."
+      : "Rust is preparing a deterministic answer. AI is off."
   );
+  decorateCards($("reasonOutput"));
 
-  // /api/ask always returns deterministic Rust insight fields. When the AI
-  // toggle is on and llama.cpp is ready, the answer may also be Qwen-refined.
   const data = await apiFetch("/api/ask", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -151,42 +182,28 @@ async function askReasoning() {
   updatePinnedInsights(data.query_insights || []);
   renderImportantList(currentSnapshot);
 
-  const insights = renderQueryInsights(data.query_insights || []);
-  const inference = renderInferenceStatus(data.inference_status);
-
-  $("reasonOutput").innerHTML = [
-    inference,
-    renderAskPlan(data.ask_plan, data.fact_pack_summary),
-    insights,
+  const parts = [
+    renderInferenceStatus(data.inference_status),
+    renderQueryInsights(data.query_insights || []),
     item("Answer", `<pre>${escapeHtml(data.answer)}</pre>`),
     renderFeedbackButtons(),
-    item("Mode", escapeHtml(data.mode), `<div class="small">Model: ${escapeHtml(data.model)} • AI used: ${data.ai_used ? "yes" : "no"}</div>`),
-    item("Context", `PostgreSQL: ${escapeHtml(data.postgres_status)} • Cognee: ${escapeHtml(data.cognee_status)} • llama.cpp: ${escapeHtml(data.llama_status)}`),
-  ].join("");
+  ].filter(Boolean);
+
+  $("reasonOutput").innerHTML = parts.join("");
+  decorateCards($("reasonOutput"));
   await loadCogneeLifecycle();
 }
 
-function renderAskPlan(plan, summary) {
-  if (!plan || !summary) return "";
-  const intents = (summary.intent_names || plan.intents || []).join(", ") || "unknown";
-  const aiScope = summary.data_sent_to_ai || `${summary.fact_count || 0} facts, ${summary.metric_count || 0} metrics, ${summary.finding_count || 0} findings`;
-  return item(
-    "Rust AskPlan + FactPack",
-    `Detected intent: ${escapeHtml(intents)}<br/>Data sent to AI: ${escapeHtml(aiScope)}`,
-    `<div class="small">Cognee recall: ${plan.use_cognee ? "planned" : "skipped"} • Manual checks: ${summary.manual_check_count || 0} • ${escapeHtml(plan.planning_note || "")}</div>`
-  );
-}
-
 function renderFeedbackButtons() {
-  return `<div class="item">
+  return `<div class="item" data-watch-title="Improve Cognee memory">
     <strong>Improve Cognee memory</strong>
     <span>Mark whether this answer helped. OSAI will remember feedback and try Cognee improve.</span>
     <div class="feedback-row">
-      <button data-feedback="helpful">Helpful</button>
-      <button data-feedback="not helpful">Not helpful</button>
-      <button data-feedback="needs more detail">Needs more detail</button>
-      <button data-feedback="resolved" data-resolved="true">Resolved</button>
-      <button data-feedback="still failing">Still failing</button>
+      <button data-feedback="helpful" type="button">Helpful</button>
+      <button data-feedback="not helpful" type="button">Not helpful</button>
+      <button data-feedback="needs more detail" type="button">Needs more detail</button>
+      <button data-feedback="resolved" data-resolved="true" type="button">Resolved</button>
+      <button data-feedback="still failing" type="button">Still failing</button>
     </div>
   </div>`;
 }
@@ -204,7 +221,8 @@ async function sendMemoryFeedback(feedback, resolved = false) {
       note: `mode=${lastAskData.mode}; ai_used=${lastAskData.ai_used}`,
     }),
   });
-  $("memoryLifecycleOutput").innerHTML = item("Feedback stored", result.detail, `<div class="small">Dataset: ${escapeHtml(result.dataset)}</div>`);
+  $("memoryLifecycleOutput").innerHTML = item("Feedback stored", escapeHtml(result.detail), `<div class="small">Dataset: ${escapeHtml(result.dataset)}</div>`);
+  decorateCards($("memoryLifecycleOutput"));
 }
 
 async function loadCogneeLifecycle() {
@@ -215,6 +233,7 @@ async function loadCogneeLifecycle() {
     item("Operations", `Remember: ${escapeHtml(status.remember)} • Recall: ${escapeHtml(status.recall)}`),
     item("Improve / Forget", `${escapeHtml(status.improve)} • ${escapeHtml(status.forget)}`),
   ].join("");
+  decorateCards($("memoryLifecycleOutput"));
 }
 
 async function forgetCogneeDataset() {
@@ -228,7 +247,8 @@ async function forgetCogneeDataset() {
       reason: "operator requested forget from OSAI dashboard",
     }),
   });
-  $("memoryLifecycleOutput").innerHTML = item("Forget result", result.detail, `<div class="small">Dataset: ${escapeHtml(result.dataset)}</div>`);
+  $("memoryLifecycleOutput").innerHTML = item("Forget result", escapeHtml(result.detail), `<div class="small">Dataset: ${escapeHtml(result.dataset)}</div>`);
+  decorateCards($("memoryLifecycleOutput"));
 }
 
 function renderQueryInsights(insights) {
@@ -236,11 +256,11 @@ function renderQueryInsights(insights) {
   const preserved = Array.from(pinnedInsights.values()).filter((insight) => !currentIds.has(insight.id));
 
   if (!insights.length && !preserved.length) {
-    return item("Rust signal match", "No direct signal matched yet. Try: whats the update, CPU status, memory status, disk usage, open ports, top processes, services, databases, Kubernetes, GitLab, or findings.");
+    return item("Rust signal match", "No direct signal matched yet. Try CPU, memory, disk, ports, processes, services, Kubernetes, GitLab, or findings.");
   }
 
   const section = (title, items) => items.length
-    ? `<div class="insight-section">
+    ? `<div class="insight-section" data-watch-title="${escapeHtml(title)}">
         <div class="small section-label">${escapeHtml(title)}</div>
         <div class="insight-grid">${items.map(renderInsightCard).join("")}</div>
       </div>`
@@ -253,53 +273,48 @@ function renderQueryInsights(insights) {
 }
 
 function renderInsightCard(insight) {
-      const metrics = (insight.metrics || []).map((metric) => `
-        <div class="insight-metric">
-          <div>
-            <strong>${escapeHtml(metric.label)}</strong>
-            <span>${escapeHtml(metric.value)}${escapeHtml(metric.unit || "")}</span>
-          </div>
-          ${Number.isFinite(metric.percent) ? bar(metric.percent) : ""}
-        </div>
-      `).join("");
-      const checks = renderManualChecks(insight.manual_checks || []);
+  const metrics = (insight.metrics || []).map((metric) => `
+    <div class="insight-metric">
+      <div>
+        <strong>${escapeHtml(metric.label)}</strong>
+        <span>${escapeHtml(metric.value)}${escapeHtml(metric.unit || "")}</span>
+      </div>
+      ${Number.isFinite(metric.percent) ? bar(metric.percent) : ""}
+    </div>
+  `).join("");
+  const checks = renderManualChecks(insight.manual_checks || []);
 
-      return `<div class="insight-card ${escapeHtml(insight.severity)}">
-        <div class="insight-head">
-          <strong>${escapeHtml(insight.label)}</strong>
-          ${chip(escapeHtml(insight.status), escapeHtml(insight.severity))}
-        </div>
-        <div class="insight-labels">
-          <button class="insight-query" data-query="${escapeHtml(deeperPrompt(insight.id))}">ask: ${escapeHtml(deeperPrompt(insight.id))}</button>
-          ${chip(`signal: ${escapeHtml(insight.id)}`)}
-        </div>
-        <p>${escapeHtml(insight.summary)}</p>
-        <div class="insight-metrics">${metrics}</div>
-        ${checks}
-        <div class="small">Recommendation: ${escapeHtml(insight.recommendation)}</div>
-      </div>`;
+  return `<div class="insight-card ${escapeHtml(insight.severity)}" data-watch-title="${escapeHtml(insight.label)}">
+    <div class="insight-head">
+      <strong>${escapeHtml(insight.label)}</strong>
+      ${chip(insight.status, insight.severity)}
+    </div>
+    <div class="insight-labels">
+      <button class="insight-query" data-query="${escapeHtml(deeperPrompt(insight.id))}" type="button">ask: ${escapeHtml(deeperPrompt(insight.id))}</button>
+      ${chip(`signal: ${insight.id}`)}
+    </div>
+    <p>${escapeHtml(insight.summary)}</p>
+    <div class="insight-metrics">${metrics}</div>
+    ${checks}
+    <div class="small">Recommendation: ${escapeHtml(insight.recommendation)}</div>
+  </div>`;
 }
 
 function renderInferenceStatus(status) {
-  if (!status) return "";
-  const disabled = status.status === "disabled_by_user";
-  const cls = status.ready ? "ok" : disabled ? "info" : "warn";
-  const checks = renderManualChecks(status.recommended_checks || []);
-  return `<div class="item inference-status">
-    <strong>${chip(status.ready ? "AI ready" : disabled ? "AI off" : "AI not ready", cls)} Inference / Reasoning Layer</strong>
-    <span>${escapeHtml(status.status)} • ${escapeHtml(status.endpoint)} • model ${escapeHtml(status.model)}</span>
-    <div class="small">Health: ${escapeHtml(status.health_url)}</div>
-    <pre>${escapeHtml(status.detail || "No detail returned.")}</pre>
-    ${checks}
+  if (!aiRequested || !status || status.ready || status.status === "disabled_by_user") return "";
+  return `<div class="item inference-status compact-alert" data-watch-title="AI not available">
+    <strong>${chip("AI not available", "warn")} Reasoning layer</strong>
+    <span>${escapeHtml(status.status || "unavailable")}. Rust fallback answered the question.</span>
+    <div class="small">Endpoint: ${escapeHtml(status.endpoint || "not configured")}</div>
   </div>`;
 }
 
 function renderManualChecks(commands) {
   if (!commands.length) return "";
-  return `<div class="manual-checks">
-    <div class="small">Safe manual checks</div>
+  return `<details class="manual-checks">
+    <summary>Safe manual checks</summary>
     ${commands.map((command) => `<code>${escapeHtml(command)}</code>`).join("")}
-  </div>`;
+  </details>`;
 }
 
 function deeperPrompt(id) {
@@ -323,22 +338,23 @@ async function loadActions() {
   $("actionsList").innerHTML = actions.length
     ? actions.map(renderAction).join("")
     : item("No actions", "Propose a read-only check or a repair action. Repair actions stay pending until approved.");
+  decorateCards($("actionsList"));
 }
 
 function renderAction(action) {
   const cls = action.status === "blocked" || action.status === "failed" ? "danger" : action.status === "proposed" ? "warn" : "safe";
   const buttons = [
-    action.status === "proposed" ? `<button data-approve="${action.id}">Approve</button>` : "",
-    action.status === "approved" ? `<button data-run="${action.id}">Run</button>` : "",
+    action.status === "proposed" ? `<button data-approve="${escapeHtml(action.id)}" type="button">Approve</button>` : "",
+    action.status === "approved" ? `<button data-run="${escapeHtml(action.id)}" type="button">Run</button>` : "",
   ].join(" ");
   const output = action.output
-    ? `<pre>${action.output.stdout || action.output.stderr || "No output"}</pre>`
+    ? `<pre>${escapeHtml(action.output.stdout || action.output.stderr || "No output")}</pre>`
     : "";
 
-  return `<div class="item">
-    <strong>${chip(action.status, cls)} ${action.command} ${(action.args || []).join(" ")}</strong>
-    <span>${action.kind} • ${action.validation_message}</span>
-    <div class="small">Reason: ${action.reason}</div>
+  return `<div class="item" data-watch-title="${escapeHtml(action.command)}">
+    <strong>${chip(action.status, cls)} ${escapeHtml(action.command)} ${escapeHtml((action.args || []).join(" "))}</strong>
+    <span>${escapeHtml(action.kind)} • ${escapeHtml(action.validation_message)}</span>
+    <div class="small">Reason: ${escapeHtml(action.reason)}</div>
     <div class="actions inline-actions">${buttons}</div>
     ${output}
   </div>`;
@@ -373,8 +389,10 @@ async function runAction(id) {
 
 function render(data) {
   currentSnapshot = data;
-  window.__lastOsaiSnapshot = data;
-  window.dispatchEvent(new CustomEvent("osai:snapshot", { detail: data }));
+  updateVisualSeverity(data);
+  publishOsaiSnapshot(data);
+  applyHiddenSections();
+
   $("subtitle").textContent = `${data.host.hostname} • ${data.os.long_version} • scanned ${new Date(data.generated_at).toLocaleString()}`;
 
   const importantFindings = data.findings.filter((finding) => isImportantSeverity(finding.severity));
@@ -384,40 +402,45 @@ function render(data) {
     card("OS", data.os.long_version, `uptime ${data.host.uptime_seconds ? Math.floor(data.host.uptime_seconds / 3600) : 0}h`),
     card("Important", String(importantFindings.length), "warning or critical signals"),
   ].join("");
+  decorateCards($("overview"));
 
   renderImportantList(data);
 
   $("findingsList").innerHTML = data.findings.length
     ? data.findings.map((f) => item(
-        `${severity(f.severity)} ${f.title}`,
-        f.detail,
-        `<div class="small">Rule: ${f.rule_id || "legacy"} • Category: ${f.category || "general"}</div>
-         <div class="small">Recommendation: ${f.recommendation || "Review manually."}</div>`
+        `${severity(f.severity)} ${escapeHtml(f.title)}`,
+        escapeHtml(f.detail),
+        `<div class="small">Rule: ${escapeHtml(f.rule_id || "legacy")} • Category: ${escapeHtml(f.category || "general")}</div>
+         <div class="small">Recommendation: ${escapeHtml(f.recommendation || "Review manually.")}</div>`
       )).join("")
     : item("No findings", "The current read-only rules did not detect immediate warnings.");
+  decorateCards($("findingsList"));
 
   $("cpuList").innerHTML = data.compute.cpus.map((cpu) => `
-    <div class="card">
-      <strong>${cpu.name || "CPU"}</strong>
-      <p>${cpu.brand || "Unknown brand"} • ${cpu.frequency_mhz} MHz</p>
+    <div class="card cpu-card" data-watch-title="${escapeHtml(cpu.name || "CPU")}">
+      <strong>${escapeHtml(cpu.name || "CPU")}</strong>
+      <p>${escapeHtml(cpu.brand || "Unknown brand")} • ${escapeHtml(cpu.frequency_mhz)} MHz</p>
       <div class="metric">${pct(cpu.usage_percent)}</div>
       ${bar(cpu.usage_percent)}
     </div>
   `).join("");
+  decorateCards($("cpuList"));
 
   $("diskList").innerHTML = data.storage.map((disk) => item(
-    disk.mount_point,
-    `${disk.name} • ${disk.file_system} • ${disk.kind}`,
+    escapeHtml(disk.mount_point),
+    `${escapeHtml(disk.name)} • ${escapeHtml(disk.file_system)} • ${escapeHtml(disk.kind)}`,
     `<div class="small">${bytes(disk.total_bytes - disk.available_bytes)} used of ${bytes(disk.total_bytes)} • ${pct(disk.used_percent)}</div>${bar(disk.used_percent)}`
   )).join("");
+  decorateCards($("diskList"));
 
   $("networkList").innerHTML = data.network.length
     ? data.network.map((net) => item(
-        net.interface,
-        `${net.operational_state} • MAC ${net.mac_address}`,
+        escapeHtml(net.interface),
+        `${escapeHtml(net.operational_state)} • MAC ${escapeHtml(net.mac_address)}`,
         `<div class="small">RX ${bytes(net.total_received_bytes)} • TX ${bytes(net.total_transmitted_bytes)}</div>`
       )).join("")
     : item("No network interfaces", "No interfaces were returned by the scanner.");
+  decorateCards($("networkList"));
 
   $("portList").innerHTML = data.listening_ports.length
     ? data.listening_ports.map((port) => chip(`${port.protocol}:${port.port}`, port.port < 1024 ? "warn" : "")).join("")
@@ -425,9 +448,9 @@ function render(data) {
 
   $("processTable").innerHTML = data.top_processes.map((p) => `
     <tr>
-      <td>${p.pid}</td>
-      <td>${p.name}</td>
-      <td>${p.status}</td>
+      <td>${escapeHtml(p.pid)}</td>
+      <td>${escapeHtml(p.name)}</td>
+      <td>${escapeHtml(p.status)}</td>
       <td>${pct(p.cpu_usage_percent)}</td>
       <td>${bytes(p.memory_bytes)}</td>
     </tr>
@@ -446,22 +469,16 @@ function render(data) {
     : chip("none detected");
 
   $("k8sSignals").innerHTML = data.kubernetes.signals.length
-    ? [item("Summary", data.kubernetes.summary || "Kubernetes detected."), ...data.kubernetes.signals.map((x) => item(x, "signal"))].join("")
+    ? [item("Summary", escapeHtml(data.kubernetes.summary || "Kubernetes detected.")), ...data.kubernetes.signals.map((x) => item(escapeHtml(x), "signal"))].join("")
     : item("Not detected", "No Kubernetes signals found.");
 
   $("gitlabSignals").innerHTML = data.gitlab.signals.length
-    ? [item("Summary", data.gitlab.summary || "GitLab detected."), ...data.gitlab.signals.map((x) => item(x, "signal"))].join("")
+    ? [item("Summary", escapeHtml(data.gitlab.summary || "GitLab detected.")), ...data.gitlab.signals.map((x) => item(escapeHtml(x), "signal"))].join("")
     : item("Not detected", "No GitLab signals found.");
-}
 
-function card(title, metric, detail) {
-  return `
-    <div class="card">
-      <p>${title}</p>
-      <div class="metric">${metric}</div>
-      <p>${detail}</p>
-    </div>
-  `;
+  decorateCards($("apps"));
+  decoratePanels();
+  renderKeepEyesOn();
 }
 
 function severity(value) {
@@ -475,6 +492,25 @@ function isImportantSeverity(value) {
   return value === "warn" || value === "critical";
 }
 
+function highestSeverityFromSnapshot(data) {
+  const values = [
+    ...(data?.findings || []).map((finding) => finding.severity),
+    ...Array.from(pinnedInsights.values()).map((insight) => insight.severity),
+  ];
+  if (values.includes("critical")) return "critical";
+  if (values.includes("warn")) return "warn";
+  return "ok";
+}
+
+function publishOsaiSnapshot(data) {
+  window.__lastOsaiSnapshot = data;
+  window.dispatchEvent(new CustomEvent("osai:snapshot", { detail: data }));
+}
+
+function updateVisualSeverity(data) {
+  document.body.dataset.severity = highestSeverityFromSnapshot(data);
+}
+
 function updatePinnedInsights(insights) {
   for (const insight of insights) {
     if (isImportantSeverity(insight.severity)) {
@@ -482,6 +518,10 @@ function updatePinnedInsights(insights) {
     } else {
       pinnedInsights.delete(insight.id);
     }
+  }
+  if (currentSnapshot) {
+    updateVisualSeverity(currentSnapshot);
+    publishOsaiSnapshot(currentSnapshot);
   }
 }
 
@@ -497,12 +537,13 @@ function renderImportantList(data) {
   const pinnedItems = pinned.map((insight) => item(
     `${severity(insight.severity)} ${escapeHtml(insight.label)}`,
     escapeHtml(insight.summary),
-    `<button class="insight-query" data-query="${escapeHtml(deeperPrompt(insight.id))}">ask again</button>`
+    `<button class="insight-query" data-query="${escapeHtml(deeperPrompt(insight.id))}" type="button">ask again</button>`
   ));
 
   $("importantList").innerHTML = findingItems.concat(pinnedItems).length
     ? findingItems.concat(pinnedItems).join("")
     : item("No important signals", "No warning or critical server signals are active in this view.");
+  decorateCards($("importantList"));
 }
 
 function updateAiButton() {
@@ -510,8 +551,7 @@ function updateAiButton() {
   const hint = $("aiHint");
   const labelEl = $("aiToggleLabel");
   if (!btn || !hint || !labelEl) return;
-  // The toggle only requests model refinement. The Rust API still performs a
-  // health check and falls back to deterministic answers if llama.cpp is busy.
+
   btn.className = `ai-toggle ${aiState}`;
   btn.setAttribute("aria-pressed", aiRequested ? "true" : "false");
 
@@ -540,14 +580,15 @@ function updateAiFromAsk(data) {
 
 function renderQuickAsk() {
   $("quickAsk").innerHTML = quickQuestions
-    .map(([query, label]) => `<button class="quick-chip" data-query="${escapeHtml(query)}">${escapeHtml(label)}</button>`)
+    .map(([query, label]) => `<button class="quick-chip" data-query="${escapeHtml(query)}" type="button">${escapeHtml(label)}</button>`)
     .join("");
 }
 
 function renderViewButtons() {
   $("viewButtons").innerHTML = optionalViews.map(([id, label]) => {
-    const hidden = $(id)?.hidden ?? true;
-    return `<button class="view-toggle" data-view="${escapeHtml(id)}" aria-pressed="${hidden ? "false" : "true"}">${hidden ? "Add" : "Hide"} ${escapeHtml(label)}</button>`;
+    const section = $(id);
+    const hidden = section?.hidden ?? true;
+    return `<button class="view-toggle" data-view="${escapeHtml(id)}" aria-pressed="${hidden ? "false" : "true"}" type="button">${hidden ? "Add" : "Hide"} ${escapeHtml(label)}</button>`;
   }).join("");
 }
 
@@ -555,82 +596,272 @@ function toggleView(id) {
   const section = $(id);
   if (!section) return;
   section.hidden = !section.hidden;
+  if (!section.hidden) hiddenSections.delete(id);
+  saveHiddenSections();
   renderViewButtons();
+  decoratePanels();
   if (!section.hidden) section.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
-$("refreshBtn").addEventListener("click", () => loadSnapshot(true).catch(showError));
-$("reasonBtn").addEventListener("click", () => askReasoning().catch(showError));
-$("aiToggleBtn").addEventListener("click", () => {
-  aiRequested = !aiRequested;
-  aiState = aiRequested ? "requested" : "off";
-  updateAiButton();
-});
-$("memoryRefreshBtn").addEventListener("click", () => loadCogneeLifecycle().catch(showError));
-$("forgetDatasetBtn").addEventListener("click", () => forgetCogneeDataset().catch(showError));
-$("quickAsk").addEventListener("click", (event) => {
-  const query = event.target.getAttribute("data-query");
-  if (!query) return;
-  $("reasonQuestion").value = query;
-  askReasoning().catch(showError);
-});
-$("viewButtons").addEventListener("click", (event) => {
-  const id = event.target.getAttribute("data-view");
-  if (id) toggleView(id);
-});
-$("proposeActionBtn").addEventListener("click", () => proposeAction().catch(showError));
-$("actionsList").addEventListener("click", (event) => {
-  const approveId = event.target.getAttribute("data-approve");
-  const runId = event.target.getAttribute("data-run");
-  if (approveId) approveAction(approveId).catch(showError);
-  if (runId) runAction(runId).catch(showError);
-});
-$("reasonOutput").addEventListener("click", (event) => {
-  const feedback = event.target.getAttribute("data-feedback");
-  if (feedback) {
-    sendMemoryFeedback(feedback, event.target.getAttribute("data-resolved") === "true").catch(showError);
+function decoratePanels() {
+  document.querySelectorAll("main > section.panel").forEach((panel) => {
+    if (panel.id === "keepEyesOn") return;
+    const title = panel.querySelector(":scope > .panel-title");
+    if (!title || title.querySelector(".panel-tools")) return;
+    const tools = document.createElement("div");
+    tools.className = "panel-tools";
+    tools.innerHTML = `
+      <button class="watch-button" data-watch-card type="button">Keep eyes on</button>
+      <button class="close-button" data-close-card type="button" aria-label="Close this card">×</button>
+    `;
+    title.appendChild(tools);
+  });
+}
+
+function decorateCards(root = document) {
+  const scope = root instanceof Element ? root : document;
+  scope.querySelectorAll(".card, .item, .mini-card, .insight-card").forEach((node) => {
+    if (node.querySelector(":scope > .card-controls")) return;
+    const controls = document.createElement("div");
+    controls.className = "card-controls";
+    controls.innerHTML = `
+      <button class="watch-button" data-watch-card type="button">Keep eyes on</button>
+      <button class="close-button" data-close-card type="button" aria-label="Close this card">×</button>
+    `;
+    node.prepend(controls);
+  });
+}
+
+function findCardFromButton(button) {
+  return button.closest(".card, .item, .mini-card, .insight-card, section.panel");
+}
+
+function cardTitle(node) {
+  return compactText(
+    node.dataset.watchTitle ||
+    node.querySelector("h3")?.textContent ||
+    node.querySelector("h4")?.textContent ||
+    node.querySelector("strong")?.textContent ||
+    node.querySelector(".metric")?.textContent ||
+    "Pinned card",
+    90
+  );
+}
+
+function cardDetail(node) {
+  const clone = node.cloneNode(true);
+  clone.querySelectorAll(".card-controls, .panel-tools, button, input, select, textarea").forEach((el) => el.remove());
+  return compactText(clone.textContent, 260);
+}
+
+function addKeepEyesItemFromNode(node) {
+  if (!node) return;
+  const item = {
+    id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    title: cardTitle(node),
+    detail: cardDetail(node),
+    source: node.id ? `#${node.id}` : "dashboard card",
+    createdAt: new Date().toISOString(),
+  };
+  keepEyesItems.unshift(item);
+  keepEyesItems = keepEyesItems.slice(0, 24);
+  saveJson(STORAGE_KEYS.watch, keepEyesItems);
+  renderKeepEyesOn();
+}
+
+function addManualKeepEyesItem() {
+  const input = $("keepEyesInput");
+  const text = input.value.trim();
+  if (!text) return;
+  keepEyesItems.unshift({
+    id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    title: text,
+    detail: "Manual operator watch item.",
+    source: "manual",
+    createdAt: new Date().toISOString(),
+  });
+  input.value = "";
+  keepEyesItems = keepEyesItems.slice(0, 24);
+  saveJson(STORAGE_KEYS.watch, keepEyesItems);
+  renderKeepEyesOn();
+}
+
+function removeKeepEyesItem(id) {
+  keepEyesItems = keepEyesItems.filter((item) => item.id !== id);
+  saveJson(STORAGE_KEYS.watch, keepEyesItems);
+  renderKeepEyesOn();
+}
+
+function renderKeepEyesOn() {
+  const list = $("keepEyesList");
+  const hint = $("keepEyesHint");
+  if (!list) return;
+  hint.hidden = keepEyesItems.length > 0;
+  list.innerHTML = keepEyesItems.map((entry) => `
+    <article class="watch-card" data-watch-id="${escapeHtml(entry.id)}">
+      <div class="watch-card-top">
+        <span class="pill info">WATCH</span>
+        <button class="close-button" data-remove-watch="${escapeHtml(entry.id)}" type="button" aria-label="Remove watch item">×</button>
+      </div>
+      <h4>${escapeHtml(entry.title)}</h4>
+      <p>${escapeHtml(entry.detail)}</p>
+      <div class="watch-meta">${escapeHtml(entry.source)} • ${new Date(entry.createdAt).toLocaleString()}</div>
+    </article>
+  `).join("");
+}
+
+function closeCard(node) {
+  if (!node || node.id === "keepEyesOn") return;
+  if (node.matches("section.panel")) {
+    node.hidden = true;
+    if (node.id) hiddenSections.add(node.id);
+    saveHiddenSections();
+    renderViewButtons();
     return;
   }
-  const query = event.target.getAttribute("data-query");
-  if (!query) return;
-  $("reasonQuestion").value = query;
-  askReasoning().catch(showError);
-});
-$("importantList").addEventListener("click", (event) => {
-  const query = event.target.getAttribute("data-query");
-  if (!query) return;
-  $("reasonQuestion").value = query;
-  askReasoning().catch(showError);
-});
+  node.remove();
+}
+
+function saveHiddenSections() {
+  saveJson(STORAGE_KEYS.hidden, Array.from(hiddenSections));
+}
+
+function applyHiddenSections() {
+  hiddenSections.forEach((id) => {
+    const section = $(id);
+    if (section && section.id !== "keepEyesOn") section.hidden = true;
+  });
+}
+
+function restoreHiddenCards() {
+  hiddenSections.clear();
+  saveHiddenSections();
+  document.querySelectorAll("main > section.panel").forEach((section) => {
+    if (!section.classList.contains("optional-panel")) section.hidden = false;
+  });
+  renderViewButtons();
+  decoratePanels();
+}
+
+function initSidebarState() {
+  const collapsed = localStorage.getItem(STORAGE_KEYS.sidebar) === "true";
+  document.body.classList.toggle("sidebar-collapsed", collapsed);
+  const btn = $("sidebarToggle");
+  if (btn) btn.setAttribute("aria-expanded", collapsed ? "false" : "true");
+}
+
+function toggleSidebar() {
+  const collapsed = !document.body.classList.contains("sidebar-collapsed");
+  document.body.classList.toggle("sidebar-collapsed", collapsed);
+  localStorage.setItem(STORAGE_KEYS.sidebar, String(collapsed));
+  $("sidebarToggle")?.setAttribute("aria-expanded", collapsed ? "false" : "true");
+}
 
 function showError(err) {
   console.error(err);
   $("subtitle").textContent = `Error: ${err.message}`;
 }
 
+function initEvents() {
+  $("refreshBtn").addEventListener("click", () => loadSnapshot(true).catch(showError));
+  $("reasonBtn").addEventListener("click", () => askReasoning().catch(showError));
+  $("aiToggleBtn").addEventListener("click", () => {
+    aiRequested = !aiRequested;
+    aiState = aiRequested ? "requested" : "off";
+    updateAiButton();
+  });
+  $("memoryRefreshBtn").addEventListener("click", () => loadCogneeLifecycle().catch(showError));
+  $("forgetDatasetBtn").addEventListener("click", () => forgetCogneeDataset().catch(showError));
+  $("proposeActionBtn").addEventListener("click", () => proposeAction().catch(showError));
+  $("addKeepEyesBtn").addEventListener("click", addManualKeepEyesItem);
+  $("keepEyesInput").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") addManualKeepEyesItem();
+  });
+  $("clearKeepEyesBtn").addEventListener("click", () => {
+    keepEyesItems = [];
+    saveJson(STORAGE_KEYS.watch, keepEyesItems);
+    renderKeepEyesOn();
+  });
+  $("restoreCardsBtn").addEventListener("click", restoreHiddenCards);
+  $("sidebarToggle").addEventListener("click", toggleSidebar);
 
-// Public bridge used by optional visual layers such as osai-3d.js.
-// This does not add a new Rust API path. It only reuses existing app.js behavior.
-window.OSAI_UI = {
-  ask(question) {
-    const input = $("reasonQuestion");
-    if (!input) return;
-    input.value = question || "whats the update ?";
-    const section = $("reasoning");
-    if (section) section.scrollIntoView({ behavior: "smooth", block: "start" });
+  $("quickAsk").addEventListener("click", (event) => {
+    const query = event.target.getAttribute("data-query");
+    if (!query) return;
+    $("reasonQuestion").value = query;
     askReasoning().catch(showError);
-  },
-  refreshScan() {
-    loadSnapshot(true).catch(showError);
-  },
-  getCurrentSnapshot() {
-    return currentSnapshot;
-  },
-};
+  });
+  $("viewButtons").addEventListener("click", (event) => {
+    const id = event.target.getAttribute("data-view");
+    if (id) toggleView(id);
+  });
+  $("actionsList").addEventListener("click", (event) => {
+    const approveId = event.target.getAttribute("data-approve");
+    const runId = event.target.getAttribute("data-run");
+    if (approveId) approveAction(approveId).catch(showError);
+    if (runId) runAction(runId).catch(showError);
+  });
+  $("reasonOutput").addEventListener("click", (event) => {
+    const feedback = event.target.getAttribute("data-feedback");
+    if (feedback) {
+      sendMemoryFeedback(feedback, event.target.getAttribute("data-resolved") === "true").catch(showError);
+      return;
+    }
+    const query = event.target.getAttribute("data-query");
+    if (!query) return;
+    $("reasonQuestion").value = query;
+    askReasoning().catch(showError);
+  });
+  $("importantList").addEventListener("click", (event) => {
+    const query = event.target.getAttribute("data-query");
+    if (!query) return;
+    $("reasonQuestion").value = query;
+    askReasoning().catch(showError);
+  });
+  $("keepEyesList").addEventListener("click", (event) => {
+    const id = event.target.getAttribute("data-remove-watch");
+    if (id) removeKeepEyesItem(id);
+  });
+  document.addEventListener("click", (event) => {
+    const watchBtn = event.target.closest("[data-watch-card]");
+    if (watchBtn) {
+      event.preventDefault();
+      addKeepEyesItemFromNode(findCardFromButton(watchBtn));
+      return;
+    }
+    const closeBtn = event.target.closest("[data-close-card]");
+    if (closeBtn) {
+      event.preventDefault();
+      closeCard(findCardFromButton(closeBtn));
+    }
+  });
+}
 
+function initNavHighlighting() {
+  const navLinks = Array.from(document.querySelectorAll("nav a[href^='#']"));
+  const navTargets = navLinks
+    .map((link) => document.querySelector(link.getAttribute("href")))
+    .filter(Boolean);
+  if (navTargets.length && "IntersectionObserver" in window) {
+    const observer = new IntersectionObserver((entries) => {
+      const visible = entries
+        .filter((entry) => entry.isIntersecting)
+        .sort((a, b) => b.intersectionRatio - a.intersectionRatio)[0];
+      if (!visible) return;
+      navLinks.forEach((link) => link.classList.toggle("active", link.getAttribute("href") === `#${visible.target.id}`));
+    }, { rootMargin: "-30% 0px -58% 0px", threshold: [0.05, 0.2, 0.5] });
+    navTargets.forEach((target) => observer.observe(target));
+  }
+}
+
+initSidebarState();
+initEvents();
+initNavHighlighting();
+renderQuickAsk();
+renderViewButtons();
+renderKeepEyesOn();
+decoratePanels();
+updateAiButton();
 loadSnapshot(false).catch(showError);
 loadActions().catch(showError);
 loadCogneeLifecycle().catch(showError);
-renderQuickAsk();
-renderViewButtons();
-updateAiButton();

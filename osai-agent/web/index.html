@@ -3,36 +3,36 @@
   File: web/index.html
   Purpose:
     Static dashboard shell for the OSAI browser UI.
- 
+
   Where this fits in OSAI:
     Served by the Rust web server and hydrated by web/app.js.
- 
-  Topics to know before editing:
-    HTML document structure, static asset loading, and dashboard semantics.
- 
+
   Important operational notes:
     Keep element IDs stable because app.js uses them directly.
- ============================================================================= -->
+    Rust API contracts remain unchanged. The visual layer is frontend-only.
+============================================================================= -->
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>OSAI Agent Dashboard</title>
-  <script type="importmap">
-    {
-      "imports": {
-        "three": "https://cdn.jsdelivr.net/npm/three@0.165.0/build/three.module.js",
-        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.165.0/examples/jsm/"
-      }
-    }
-  </script>
+  <meta name="theme-color" content="#07111f" />
   <link rel="stylesheet" href="/app.css" />
 </head>
-<body>
+<body data-severity="ok">
+  <div class="aurora-layer" aria-hidden="true"></div>
+  <div class="noise-layer" aria-hidden="true"></div>
+  <div class="scanline-layer" aria-hidden="true"></div>
+
+  <button id="sidebarToggle" class="sidebar-toggle" type="button" aria-expanded="true" aria-controls="osaiSidebar">
+    <span aria-hidden="true">☰</span>
+    <span class="sidebar-toggle-text">Menu</span>
+  </button>
+
   <div class="shell">
-    <aside class="sidebar">
+    <aside id="osaiSidebar" class="sidebar">
       <div class="brand">
-        <div class="logo">OS</div>
+        <div class="logo" aria-label="OSAI logo">OS</div>
         <div>
           <h1>OSAI Agent</h1>
           <p>Rust machine intelligence</p>
@@ -40,9 +40,9 @@
       </div>
 
       <nav>
-        <a href="#overview" class="active">Overview</a>
-        <a href="#system3d">3D Glass Map</a>
-        <a href="#reasoning">Reasoning</a>
+        <a href="#keepEyesOn" class="active">Keep eyes on</a>
+        <a href="#overview">Overview</a>
+        <a href="#reasoning">Ask OSAI</a>
         <a href="#memoryLifecycle">Memory</a>
         <a href="#important">Important</a>
         <a href="#viewPicker">Add Views</a>
@@ -50,116 +50,124 @@
         <a href="#actionsPanel">Actions</a>
       </nav>
 
-      <div class="mode-card">
+      <div class="mode-card compact-card">
         <span class="pill safe">GUARDED</span>
         <p>Read-only checks can run from the allowlist. Repair actions require approval.</p>
       </div>
     </aside>
 
     <main class="content">
-      <header class="topbar">
+      <header class="topbar hero-panel">
         <div>
+          <div class="eyebrow">Local operator console</div>
           <h2>Local OS Snapshot</h2>
           <p id="subtitle">Loading system data...</p>
         </div>
-        <div class="actions">
-          <button id="refreshBtn">Refresh scan</button>
-          <a class="ghost" href="/api/snapshot" target="_blank">Open JSON</a>
+        <div class="actions hero-actions">
+          <button id="refreshBtn" type="button">Refresh scan</button>
+          <a class="ghost" href="/api/snapshot" target="_blank" rel="noreferrer">Open JSON</a>
         </div>
       </header>
 
-      <section id="overview" class="grid cards"></section>
-
-      <section id="system3d" class="panel system3d-panel">
+      <section id="keepEyesOn" class="panel keep-eyes-panel" data-watch-title="Keep eyes on">
         <div class="panel-title">
           <div>
-            <h3>3D System Glass Map</h3>
-            <p>Visual layer only. It uses the same Rust snapshot already feeding this dashboard.</p>
+            <div class="eyebrow">Operator focus</div>
+            <h3>Keep eyes on</h3>
           </div>
-          <div class="system3d-actions">
-            <button id="askSelected3dBtn">Ask selected</button>
-            <button id="breakSelected3dBtn" class="danger-button">Break selected</button>
-            <button id="reset3dBtn">Reset glass</button>
-          </div>
+          <p>Pin anything you want to watch without keeping the full dashboard open.</p>
         </div>
-
-        <div class="system3d-layout">
-          <div id="osai3d" aria-label="3D system severity map">
-            <div class="system3d-loading">Waiting for Rust snapshot...</div>
-          </div>
-
-          <aside class="system3d-hud">
-            <span class="pill info">VISUAL ONLY</span>
-            <h4 id="osai3dTitle">No node selected</h4>
-            <p id="osai3dDetail">Click any glass node. Low severity glows, warnings blink, critical nodes crack, and Break selected shatters the visual object only.</p>
-            <div class="system3d-legend">
-              <span><i class="legend-dot ok-dot"></i> OK / low glow</span>
-              <span><i class="legend-dot warn-dot"></i> Warn blink</span>
-              <span><i class="legend-dot danger-dot"></i> Critical crack</span>
-            </div>
-          </aside>
+        <div class="keep-eyes-tools">
+          <input id="keepEyesInput" placeholder="Add manual watch item, e.g. RustFS bucket, Cognee API, llama health" />
+          <button id="addKeepEyesBtn" type="button">Add</button>
+          <button id="restoreCardsBtn" type="button" class="ghost-button">Restore hidden cards</button>
+          <button id="clearKeepEyesBtn" type="button" class="danger-button">Clear</button>
         </div>
+        <div id="keepEyesHint" class="keep-eyes-hint">
+          Use <strong>Keep eyes on</strong> from any card or panel to pin it here.
+        </div>
+        <div id="keepEyesList" class="watch-grid"></div>
       </section>
 
-      <section id="reasoning" class="panel">
+      <section id="overview" class="grid cards painting-grid" aria-live="polite"></section>
+
+      <section id="reasoning" class="panel chat-panel" data-watch-title="Ask OSAI">
         <div class="panel-title">
-          <h3>Ask OSAI</h3>
+          <div>
+            <div class="eyebrow">Ask layer</div>
+            <h3>Ask OSAI</h3>
+          </div>
           <p>Rust answers first. Turn AI on only when you want Qwen refinement.</p>
         </div>
         <div class="ask-toolbar">
-          <button id="aiToggleBtn" class="ai-toggle" aria-pressed="false">
+          <button id="aiToggleBtn" class="ai-toggle" type="button" aria-pressed="false">
             <span class="status-dot"></span>
             <span id="aiToggleLabel">AI off</span>
           </button>
           <span id="aiHint" class="small">Rust-only mode. No llama/Qwen call will be made.</span>
         </div>
-        <div class="form-grid">
-          <textarea id="reasonQuestion" rows="4" placeholder="whats the update ?">whats the update ?</textarea>
-          <button id="reasonBtn">Ask OSAI</button>
+        <div class="form-grid ask-box">
+          <textarea id="reasonQuestion" rows="3" placeholder="whats the update ?">whats the update ?</textarea>
+          <button id="reasonBtn" type="button">Ask OSAI</button>
         </div>
         <div id="quickAsk" class="quick-ask"></div>
-        <div id="reasonOutput" class="list"></div>
+        <div id="reasonOutput" class="list answer-stream"></div>
       </section>
 
-      <section id="memoryLifecycle" class="panel">
+      <section id="memoryLifecycle" class="panel memory-panel" data-watch-title="Cognee Memory Lifecycle">
         <div class="panel-title">
-          <h3>Cognee Memory Lifecycle</h3>
+          <div>
+            <div class="eyebrow">Memory loop</div>
+            <h3>Cognee Memory Lifecycle</h3>
+          </div>
           <p>Remember, recall, improve, and forget controls for OSAI memory.</p>
         </div>
         <div class="memory-actions">
-          <button id="memoryRefreshBtn">Refresh memory status</button>
-          <button id="forgetDatasetBtn" class="danger-button">Forget dataset</button>
+          <button id="memoryRefreshBtn" type="button">Refresh memory status</button>
+          <button id="forgetDatasetBtn" type="button" class="danger-button">Forget dataset</button>
         </div>
         <div id="memoryLifecycleOutput" class="list"></div>
       </section>
 
-      <section id="important" class="panel">
+      <section id="important" class="panel important-panel" data-watch-title="Important">
         <div class="panel-title">
-          <h3>Important</h3>
+          <div>
+            <div class="eyebrow">Pinned problems</div>
+            <h3>Important</h3>
+          </div>
           <p>Only warning and critical server signals stay here.</p>
         </div>
         <div id="importantList" class="list"></div>
       </section>
 
-      <section id="viewPicker" class="panel">
+      <section id="viewPicker" class="panel view-panel" data-watch-title="Add Server Views">
         <div class="panel-title">
-          <h3>Add Server Views</h3>
+          <div>
+            <div class="eyebrow">Expandable telemetry</div>
+            <h3>Add Server Views</h3>
+          </div>
           <p>Keep the screen quiet. Add details only when you need them.</p>
         </div>
         <div id="viewButtons" class="view-buttons"></div>
       </section>
 
-      <section id="history" class="panel">
+      <section id="history" class="panel history-panel" data-watch-title="Persistent Scan History">
         <div class="panel-title">
-          <h3>Persistent Scan History</h3>
+          <div>
+            <div class="eyebrow">Persistence</div>
+            <h3>Persistent Scan History</h3>
+          </div>
           <p>Stored locally as JSONL under the configured data directory.</p>
         </div>
-        <div id="historyList" class="list"></div>
+        <div id="historyList" class="list timeline-list"></div>
       </section>
 
-      <section id="actionsPanel" class="panel">
+      <section id="actionsPanel" class="panel actions-panel" data-watch-title="Guarded Command Executor">
         <div class="panel-title">
-          <h3>Guarded Command Executor</h3>
+          <div>
+            <div class="eyebrow">Controlled execution</div>
+            <h3>Guarded Command Executor</h3>
+          </div>
           <p>No raw shell strings. Commands are allowlisted and audited.</p>
         </div>
         <div class="form-grid action-form">
@@ -170,38 +178,50 @@
             <option value="read_only">read_only</option>
             <option value="repair">repair</option>
           </select>
-          <button id="proposeActionBtn">Propose action</button>
+          <button id="proposeActionBtn" type="button">Propose action</button>
         </div>
         <div id="actionsList" class="list"></div>
       </section>
 
-      <section id="findings" class="panel optional-panel" hidden>
+      <section id="findings" class="panel optional-panel" data-watch-title="Findings" hidden>
         <div class="panel-title">
-          <h3>Findings</h3>
+          <div>
+            <div class="eyebrow">Rule engine</div>
+            <h3>Findings</h3>
+          </div>
           <p>Rules created from the current machine snapshot.</p>
         </div>
         <div id="findingsList" class="list"></div>
       </section>
 
-      <section id="compute" class="panel optional-panel" hidden>
+      <section id="compute" class="panel optional-panel" data-watch-title="Compute" hidden>
         <div class="panel-title">
-          <h3>Compute</h3>
+          <div>
+            <div class="eyebrow">CPU canvas</div>
+            <h3>Compute</h3>
+          </div>
           <p>CPU topology and live usage.</p>
         </div>
-        <div id="cpuList" class="grid"></div>
+        <div id="cpuList" class="grid compute-grid"></div>
       </section>
 
-      <section id="storage" class="panel optional-panel" hidden>
+      <section id="storage" class="panel optional-panel" data-watch-title="Storage" hidden>
         <div class="panel-title">
-          <h3>Storage</h3>
+          <div>
+            <div class="eyebrow">Disk gallery</div>
+            <h3>Storage</h3>
+          </div>
           <p>Mounted disks and usage.</p>
         </div>
         <div id="diskList" class="list"></div>
       </section>
 
-      <section id="network" class="panel optional-panel" hidden>
+      <section id="network" class="panel optional-panel" data-watch-title="Network" hidden>
         <div class="panel-title">
-          <h3>Network</h3>
+          <div>
+            <div class="eyebrow">Interfaces</div>
+            <h3>Network</h3>
+          </div>
           <p>Network interfaces and listening ports.</p>
         </div>
         <div id="networkList" class="list"></div>
@@ -209,9 +229,12 @@
         <div id="portList" class="port-grid"></div>
       </section>
 
-      <section id="processes" class="panel optional-panel" hidden>
+      <section id="processes" class="panel optional-panel" data-watch-title="Top Processes" hidden>
         <div class="panel-title">
-          <h3>Top Processes</h3>
+          <div>
+            <div class="eyebrow">Process surface</div>
+            <h3>Top Processes</h3>
+          </div>
           <p>Sorted by memory, then CPU.</p>
         </div>
         <div class="table-wrap">
@@ -230,41 +253,43 @@
         </div>
       </section>
 
-      <section id="apps" class="panel optional-panel" hidden>
+      <section id="apps" class="panel optional-panel" data-watch-title="Apps, Services, Databases" hidden>
         <div class="panel-title">
-          <h3>Apps, Services, Databases</h3>
+          <div>
+            <div class="eyebrow">Detected ecosystem</div>
+            <h3>Apps, Services, Databases</h3>
+          </div>
           <p>Detected from processes, paths, and listening ports.</p>
         </div>
         <div class="three">
-          <div>
+          <div class="mini-card art-tile" data-watch-title="Services">
             <h4>Services</h4>
             <div id="servicesList" class="chips"></div>
           </div>
-          <div>
+          <div class="mini-card art-tile" data-watch-title="Apps">
             <h4>Apps</h4>
             <div id="appsList" class="chips"></div>
           </div>
-          <div>
+          <div class="mini-card art-tile" data-watch-title="Databases">
             <h4>Databases</h4>
             <div id="dbList" class="chips"></div>
           </div>
         </div>
         <div class="two">
-          <div class="mini-card">
+          <div class="mini-card art-tile" data-watch-title="Kubernetes Plugin">
             <h4>Kubernetes Plugin</h4>
             <div id="k8sSignals" class="list compact"></div>
           </div>
-          <div class="mini-card">
+          <div class="mini-card art-tile" data-watch-title="GitLab Plugin">
             <h4>GitLab Plugin</h4>
             <div id="gitlabSignals" class="list compact"></div>
           </div>
         </div>
       </section>
-
     </main>
   </div>
 
-  <script src="/app.js"></script>
-  <script type="module" src="/osai-3d.js"></script>
+  <script src="/app.js" defer></script>
+  <script src="/osai-3d.js" defer></script>
 </body>
 </html>
