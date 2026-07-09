@@ -373,6 +373,8 @@ async function runAction(id) {
 
 function render(data) {
   currentSnapshot = data;
+  window.__lastOsaiSnapshot = data;
+  window.dispatchEvent(new CustomEvent("osai:snapshot", { detail: data }));
   $("subtitle").textContent = `${data.host.hostname} • ${data.os.long_version} • scanned ${new Date(data.generated_at).toLocaleString()}`;
 
   const importantFindings = data.findings.filter((finding) => isImportantSeverity(finding.severity));
@@ -605,6 +607,26 @@ function showError(err) {
   console.error(err);
   $("subtitle").textContent = `Error: ${err.message}`;
 }
+
+
+// Public bridge used by optional visual layers such as osai-3d.js.
+// This does not add a new Rust API path. It only reuses existing app.js behavior.
+window.OSAI_UI = {
+  ask(question) {
+    const input = $("reasonQuestion");
+    if (!input) return;
+    input.value = question || "whats the update ?";
+    const section = $("reasoning");
+    if (section) section.scrollIntoView({ behavior: "smooth", block: "start" });
+    askReasoning().catch(showError);
+  },
+  refreshScan() {
+    loadSnapshot(true).catch(showError);
+  },
+  getCurrentSnapshot() {
+    return currentSnapshot;
+  },
+};
 
 loadSnapshot(false).catch(showError);
 loadActions().catch(showError);

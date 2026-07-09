@@ -616,3 +616,126 @@ pre {
     grid-template-columns: 1fr;
   }
 }
+
+
+/* =============================================================================
+ * 3D System Glass Map
+ * Visual-only Three.js layer. It does not change Rust API behavior.
+ * ============================================================================= */
+.system3d-panel {
+  overflow: hidden;
+}
+
+.system3d-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.system3d-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  gap: 16px;
+  align-items: stretch;
+}
+
+#osai3d {
+  position: relative;
+  min-height: 520px;
+  border: 1px solid rgba(125, 211, 252, .25);
+  border-radius: 22px;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 20% 15%, rgba(125, 211, 252, .18), transparent 28%),
+    radial-gradient(circle at 80% 70%, rgba(167, 139, 250, .15), transparent 32%),
+    linear-gradient(145deg, rgba(11, 16, 32, .88), rgba(18, 26, 47, .92));
+  box-shadow: inset 0 0 45px rgba(125, 211, 252, .06), var(--shadow);
+}
+
+#osai3d canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.system3d-loading {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  font-weight: 800;
+  letter-spacing: .04em;
+  pointer-events: none;
+}
+
+.system3d-hud {
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 22px;
+  background: rgba(11, 16, 32, .62);
+  box-shadow: inset 0 0 28px rgba(125, 211, 252, .04);
+}
+
+.system3d-hud h4 {
+  margin: 16px 0 8px;
+  font-size: 20px;
+}
+
+.system3d-hud p {
+  margin: 0;
+  line-height: 1.6;
+}
+
+.system3d-legend {
+  display: grid;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.system3d-legend span {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.legend-dot {
+  width: 11px;
+  height: 11px;
+  border-radius: 99px;
+  display: inline-block;
+}
+
+.ok-dot {
+  background: var(--safe);
+  box-shadow: 0 0 15px rgba(52, 211, 153, .8);
+}
+
+.warn-dot {
+  background: var(--warn);
+  box-shadow: 0 0 15px rgba(250, 204, 21, .8);
+}
+
+.danger-dot {
+  background: var(--danger);
+  box-shadow: 0 0 15px rgba(251, 113, 133, .85);
+}
+
+@media (max-width: 1100px) {
+  .system3d-layout {
+    grid-template-columns: 1fr;
+  }
+
+  #osai3d {
+    min-height: 420px;
+  }
+
+  .system3d-actions {
+    justify-content: flex-start;
+    margin-top: 14px;
+  }
+}

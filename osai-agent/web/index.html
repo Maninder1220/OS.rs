@@ -18,6 +18,14 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>OSAI Agent Dashboard</title>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.165.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.165.0/examples/jsm/"
+      }
+    }
+  </script>
   <link rel="stylesheet" href="/app.css" />
 </head>
 <body>
@@ -33,6 +41,7 @@
 
       <nav>
         <a href="#overview" class="active">Overview</a>
+        <a href="#system3d">3D Glass Map</a>
         <a href="#reasoning">Reasoning</a>
         <a href="#memoryLifecycle">Memory</a>
         <a href="#important">Important</a>
@@ -60,6 +69,37 @@
       </header>
 
       <section id="overview" class="grid cards"></section>
+
+      <section id="system3d" class="panel system3d-panel">
+        <div class="panel-title">
+          <div>
+            <h3>3D System Glass Map</h3>
+            <p>Visual layer only. It uses the same Rust snapshot already feeding this dashboard.</p>
+          </div>
+          <div class="system3d-actions">
+            <button id="askSelected3dBtn">Ask selected</button>
+            <button id="breakSelected3dBtn" class="danger-button">Break selected</button>
+            <button id="reset3dBtn">Reset glass</button>
+          </div>
+        </div>
+
+        <div class="system3d-layout">
+          <div id="osai3d" aria-label="3D system severity map">
+            <div class="system3d-loading">Waiting for Rust snapshot...</div>
+          </div>
+
+          <aside class="system3d-hud">
+            <span class="pill info">VISUAL ONLY</span>
+            <h4 id="osai3dTitle">No node selected</h4>
+            <p id="osai3dDetail">Click any glass node. Low severity glows, warnings blink, critical nodes crack, and Break selected shatters the visual object only.</p>
+            <div class="system3d-legend">
+              <span><i class="legend-dot ok-dot"></i> OK / low glow</span>
+              <span><i class="legend-dot warn-dot"></i> Warn blink</span>
+              <span><i class="legend-dot danger-dot"></i> Critical crack</span>
+            </div>
+          </aside>
+        </div>
+      </section>
 
       <section id="reasoning" class="panel">
         <div class="panel-title">
@@ -225,5 +265,6 @@
   </div>
 
   <script src="/app.js"></script>
+  <script type="module" src="/osai-3d.js"></script>
 </body>
 </html>

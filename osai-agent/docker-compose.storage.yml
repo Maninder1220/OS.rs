@@ -47,21 +47,36 @@ services:
       - "9001:9001"
     volumes:
       - osai-rustfs-data:/data
+  
   rustfs-init:
     image: minio/mc:RELEASE.2025-05-21T01-59-54Z
     container_name: osai-rustfs-init
     depends_on:
       rustfs:
         condition: service_started
-    entrypoint: ["/bin/sh", "-c"]
-    command: |
-      set -eu
-      until mc alias set rustfs http://rustfs:9000 rustfsadmin rustfsadmin >/dev/null 2>&1; do
-        echo waiting for rustfs
-        sleep 2
-      done
-      mc mb --ignore-existing rustfs/osai-agent
-      mc ls rustfs
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        echo "============================================================"
+        echo "OSAI RustFS bucket initializer"
+        echo "============================================================"
+
+        echo "[INFO] Sleeping 10 seconds so RustFS API can become ready..."
+        sleep 10
+
+        echo "[INFO] Setting RustFS alias..."
+        mc alias set rustfs http://rustfs:9000 rustfsadmin rustfsadmin
+
+        echo "[INFO] Creating bucket: osai-agent"
+        mc mb --ignore-existing rustfs/osai-agent
+
+        echo "[INFO] Final bucket list:"
+        mc ls rustfs
+
+        echo "============================================================"
+        echo "[OK] RustFS bucket initialization complete"
+        echo "============================================================"
     restart: "no"
 
   llama:
