@@ -1,337 +1,377 @@
-# OSAI Agent
+# OSAI Agent - 2865f44f20686371cdb01d0049f97124bdb97c803c257aa187888c719ebb1b73
 
-> File guide:
-> - Purpose: Main operator guide for understanding, configuring, running, and extending OSAI Agent.
-> - Where this fits in OSAI: This is the first document humans and AI assistants should read before touching Docker, Rust binaries, or model deployment.
-> - Topics to know: Markdown structure, OSAI architecture, Docker services, Cognee memory, and llama.cpp/Qwen inference.
-> - Operational note: Keep commands aligned with the two supported llama modes: host-mounted GGUF and baked model image.
+OSAI Agent is a **Rust-first local Linux and DevOps operations assistant**.
 
+It scans a Linux machine, stores exact system facts, archives raw evidence, builds searchable AI memory, and answers operator questions through a local Qwen model running behind llama.cpp.
 
+The core design rule is:
 
-OSAI Agent is a **Rust-first local Linux and DevOps intelligence agent**. It scans the machine, stores exact facts, archives raw evidence, prepares AI memory, and can ask a local llama.cpp/Qwen model using recalled Cognee context.
+```text
+Rust is the source of truth.
+Qwen is only the natural-language reasoning layer.
+```
 
-The current project is intentionally split into Rust binaries plus Docker services:
+That means OSAI should not send the whole server state to Qwen. Rust first detects the user intent, builds a focused FactPack, and sends Qwen only the facts needed for that question.
+
+Example:
+
+```text
+"what my cpu doing"      -> CPU facts only
+"what about ram"         -> memory facts only
+"update on service"      -> service/process/database facts only
+"whats the update"       -> compact server overview
+```
+
+---
+
+## Architecture
+
+```text
+Browser dashboard
+  -> osai-agent Rust API
+  -> AskPlan intent detection
+  -> FactPack focused evidence
+  -> optional Cognee memory recall
+  -> optional llama.cpp/Qwen answer
+```
+
+Runtime components:
 
 ```text
 Rust binaries:
-  osai-agent             = scanner + dashboard + API + guarded actions
-  osai-all               = one-command supervisor for agent + storage worker + Cognee ingest
-  osai-storage-worker    = PostgreSQL + RustFS persistence worker
-  osai-cognee-ingest     = pushes pending memory rows into Cognee REST
-  osai-ask               = recalls Cognee memory + asks llama.cpp/Qwen
+  osai-agent             Dashboard, scanner, API, guarded actions
+  osai-all               One-command local supervisor
+  osai-storage-worker    PostgreSQL + RustFS persistence worker
+  osai-cognee-ingest     Pushes pending memory rows to Cognee
+  osai-ask               CLI ask path for Qwen/Cognee testing
 
-Docker Compose services:
-  postgres               = operational DB + Cognee DB + pgvector
-  rustfs                 = S3-compatible raw evidence store
-  rustfs-init            = creates the osai-agent bucket automatically
-  llama                  = llama.cpp server running Qwen3-4B-Q4_K_M.gguf
-  cognee                 = Cognee REST API memory/retrieval server
+Docker services:
+  postgres               OSAI operational DB + Cognee DB + pgvector
+  rustfs                 S3-compatible raw evidence store
+  rustfs-init            Creates the osai-agent bucket
+  llama                  llama.cpp server running Qwen GGUF
+  cognee                 Cognee REST API memory/retrieval server
 ```
 
-## Mental model
+Data roles:
 
 ```text
-Rust scans and controls.
-PostgreSQL stores exact facts and metadata.
-RustFS stores raw JSON/log/report objects.
-Cognee stores searchable AI memory.
-pgvector finds semantically similar memory.
-Kuzu stores relationships/graph memory.
-llama.cpp runs Qwen locally.
-Rust sends Qwen only the useful retrieved context.
+PostgreSQL = exact facts, scan metadata, findings, outbox state
+RustFS     = raw JSON snapshots and Markdown evidence
+Cognee     = searchable memory/retrieval layer
+Qwen       = natural-language answer layer
+Rust       = scanner, planner, guardrails, severity, command suggestions
 ```
 
-Qwen does **not** directly read PostgreSQL, RustFS, pgvector, or Kuzu. Rust fetches facts and memory first, builds a safe prompt, sends that prompt to llama.cpp/Qwen, and then can save the answer back.
+---
 
-## Data format strategy
+## What you need handy before installing
 
-OSAI now keeps two versions of each scan:
+Keep these ready before deployment.
+
+### Access and repo
 
 ```text
-Raw JSON snapshot      = exact machine evidence, stored in RustFS and PostgreSQL JSONB
-Markdown memory file   = descriptive human-readable summary, stored in RustFS, PostgreSQL, and Cognee
+GitHub repository:
+  https://github.com/Maninder1220/OS.rs.git
+
+Branches:
+  main    = source build/development path
+  binary  = binary-only deployment path, if you maintain that branch
 ```
 
-The Markdown memory file is the preferred input for Cognee because it has headings, bullet points, findings, recommendations, evidence links, and tags. Markdown is plain text but structured enough for humans and LLM/RAG systems to read cleanly. Raw JSON is still preserved as evidence, but it is not the main memory format sent to Cognee.
-
-
-## What the project can do now
-
-- Serve a browser dashboard from the Rust binary.
-- Expose API endpoints for health, snapshot, history, knowledge, plugins, reasoning, and guarded actions.
-- Scan Linux host state: OS, CPU, memory, disk, processes, ports, Kubernetes signals, and GitLab signals.
-- Apply rule findings for high memory, high CPU, disk pressure, sensitive ports, Kubernetes detection, GitLab detection, and known GitLab auto-start memory pattern.
-- Keep local JSONL scan history in `data/scan_history.jsonl`.
-- Persist structured scan metadata to PostgreSQL.
-- Persist full raw scan JSON to RustFS.
-- Convert each scan into descriptive Markdown memory that is readable by humans and easier for Cognee/Qwen to understand.
-- Persist Markdown memory to RustFS under `memory/scans/...`.
-- Store the same Markdown memory text and metadata in PostgreSQL.
-- Push useful Markdown memory rows to Cognee over REST as uploaded `.md` files. Raw scans are stored every cycle, while Cognee receives first scan, changed state, important state refreshes, and periodic summaries.
-- Ask local Qwen via llama.cpp using PostgreSQL facts plus recalled Cognee memory. AI is a refinement layer; Rust remains the source of truth.
-- Ask OSAI from the browser dashboard through `/api/ask`, without using the llama.cpp UI directly.
-- Run the complete local Rust runtime with one command through `osai-all`, which starts Docker support services, runs RustFS bucket initialization, then supervises `osai-agent`, `osai-storage-worker`, and `osai-cognee-ingest`.
-- Use an AskPlan + FactPack path so Rust detects intent first and sends Qwen only focused facts.
-- Expose a Cognee memory lifecycle panel for remember, recall, improve-feedback, forget, and health visibility.
-
-## Project structure
+### Local machine requirements
 
 ```text
-osai-agent/
-├── Cargo.toml
-├── Cargo.lock
-├── README.md
-├── docker-compose.storage.yml
-├── docker-compose.model-image.yml
-├── .env.storage.example
-├── .env.cognee.example
-├── config/
-│   └── osai-agent.toml
-├── docker/
-│   ├── cognee/
-│   │   └── Dockerfile
-│   ├── llama/
-│   │   └── Dockerfile
-│   └── llama-model/
-│       ├── Dockerfile
-│       └── Dockerfile.dockerignore
-├── docs/
-│   ├── llama-qwen-cognee-rust-architecture.md
-│   ├── qwen3-gguf-loading-footprint.md
-│   ├── phase3-storage-cognee.md
-│   ├── rust-storage-worker.md
-│   ├── rust-to-cognee-to-qwen-data-flow.md
-│   └── understanding-model-metadata-like-a-pro.md
-├── knowledge/
-│   └── *.md
-├── models/
-│   └── Qwen3-4B-Q4_K_M.gguf  # local file, ignored by git
-├── packaging/
-│   ├── rpm/
-│   └── systemd/
-├── scripts/
-│   ├── ask-local-qwen.sh
-│   ├── build-llama-model-image.sh
-│   ├── build-rpm.sh
-│   ├── run-cognee-ingest.sh
-│   ├── run-memory-worker.sh
-│   └── setup-storage-venv.sh  # deprecated; use Docker Compose for Cognee
-├── src/
-│   ├── main.rs
-│   ├── actions.rs
-│   ├── ask.rs
-│   ├── history.rs
-│   ├── knowledge.rs
-│   ├── reasoning.rs
-│   ├── rules.rs
-│   ├── bin/
-│   │   ├── osai-storage-worker.rs
-│   │   ├── osai-cognee-ingest.rs
-│   │   └── osai-ask.rs
-│   ├── collector/
-│   └── plugins/
-├── storage/
-│   ├── postgres-init/
-│   └── migrations/
-└── web/
-    ├── index.html
-    ├── app.css
-    └── app.js
+Linux host:
+  Ubuntu, Debian, RHEL, AlmaLinux, Rocky, Fedora, or WSL2 for development
+
+Required tools:
+  git
+  curl
+  jq
+  docker
+  docker compose plugin
+  rustup / cargo / rustfmt
 ```
 
-## Service dependency flow
+### Model file
 
-Start in this order:
+Default model expected by this project:
 
 ```text
-1. PostgreSQL + RustFS + llama.cpp/Qwen + Cognee container stack
-2. osai-agent Rust server
-3. osai-storage-worker
-4. osai-cognee-ingest
-5. Browser Ask OSAI or osai-ask CLI
+models/Qwen3-4B-Q4_K_M.gguf
 ```
 
-## One-command Rust runtime
+The model is intentionally not committed to Git because it is large.
 
-After building release binaries, you can run the Rust side with one supervisor:
+### Cognee details
+
+For local Cognee Docker mode, defaults from `.env.cognee.example` are enough for testing.
+
+For Cognee Cloud or manually deployed Cognee API, keep these handy:
+
+```text
+COGNEE_API_URL
+COGNEE_API_PREFIX
+COGNEE_API_KEY
+COGNEE_TENANT_ID
+COGNEE_USER_ID
+COGNEE_DATASET
+```
+
+If your Cognee deployment uses explicit users/tenants, also keep:
+
+```text
+tenant name
+tenant id
+user id
+username / email
+password or API key
+role name, if access control is enabled
+```
+
+### Database and object-store details
+
+OSAI operational database:
+
+```text
+OSAI_POSTGRES_DSN=postgresql://osai:osai_password@127.0.0.1:5432/osai_agent
+```
+
+Cognee local database:
+
+```text
+DB_PROVIDER=postgres
+DB_HOST=postgres
+DB_PORT=5432
+DB_USERNAME=cognee
+DB_PASSWORD=cognee_password
+DB_NAME=cognee_db
+```
+
+RustFS object store:
+
+```text
+OBJECT_STORE_ENDPOINT=127.0.0.1:9000
+OBJECT_STORE_ACCESS_KEY=rustfsadmin
+OBJECT_STORE_SECRET_KEY=rustfsadmin
+OBJECT_STORE_BUCKET=osai-agent
+OBJECT_STORE_SECURE=false
+OBJECT_STORE_REGION=us-east-1
+```
+
+Dashboard token:
+
+```text
+OSAI_AGENT_TOKEN=
+```
+
+Leave this empty for local development. Set it only when exposing the dashboard outside localhost or when you intentionally want token-protected API access.
+
+---
+
+## Used dependencies
+
+### System dependencies
+
+```text
+git                  Clone and update the project
+curl                 Download model files and test APIs
+jq                   Pretty-print JSON API responses
+docker               Run PostgreSQL, RustFS, Cognee, and llama.cpp
+docker compose       Start the full local support stack
+rustup/cargo         Build Rust binaries
+rustfmt/cargo fmt    Format Rust code before build/commit
+aws-cli              Optional RustFS/S3 verification
+```
+
+### Rust project dependencies
+
+The Rust dependency list lives in:
+
+```text
+Cargo.toml
+Cargo.lock
+```
+
+Cargo downloads Rust crates and builds the binaries.
+
+Main Rust responsibilities:
+
+```text
+axum / tokio         Web API and async runtime
+serde / serde_json   JSON request/response and snapshot structures
+reqwest              HTTP calls to Cognee and llama.cpp
+sqlx                 PostgreSQL persistence
+tracing              structured logs
+```
+
+### Runtime service dependencies
+
+```text
+PostgreSQL + pgvector
+RustFS
+llama.cpp server
+Qwen3 GGUF model
+Cognee REST API
+```
+
+### AI/model dependencies
+
+```text
+Qwen3-4B-Q4_K_M.gguf
+llama.cpp OpenAI-compatible HTTP endpoint
+Cognee REST recall/remember endpoint
+```
+
+---
+
+## Installation from source branch
+
+Start with Git clone:
 
 ```bash
-cargo build --release
+git clone https://github.com/Maninder1220/OS.rs.git
+cd OS.rs
+git checkout main
+```
+
+Find the Rust project folder:
+
+```bash
+find . -maxdepth 3 -name Cargo.toml -print
+```
+
+Go into the folder that contains `Cargo.toml`.
+
+Example:
+
+```bash
+cd osai-agent
+```
+
+If `Cargo.toml` is already in the repository root, stay in the root.
+
+---
+
+## Binary-only deployment branch
+
+Use this only when you maintain a branch that already contains compiled binaries or packaging output.
+
+```bash
+git clone --branch binary https://github.com/Maninder1220/OS.rs.git OS.rs-binary
+cd OS.rs-binary
+```
+
+If your binary branch has a different name, replace `binary` with the real branch name.
+
+Expected binary deployment idea:
+
+```text
+No Rust compile needed on the target machine.
+Use shipped target/release binaries, packaged tar, RPM, or systemd units.
+Still keep Docker Compose services available for PostgreSQL, RustFS, Cognee, and llama.cpp unless they run elsewhere.
+```
+
+Typical binary run:
+
+```bash
+chmod +x target/release/osai-*
 RUST_LOG=info ./target/release/osai-all
 ```
 
-`osai-all` performs these steps:
+---
 
-```text
-1. docker compose -f docker-compose.storage.yml up -d --build postgres rustfs llama cognee
-2. docker compose -f docker-compose.storage.yml up rustfs-init
-3. start target/release/osai-agent
-4. start target/release/osai-storage-worker
-5. start target/release/osai-cognee-ingest
-```
+## Configure environment files
 
-This keeps the individual binaries available for debugging, but gives operators one command for the normal full flow.
-
-## AskPlan + FactPack
-
-Ask OSAI now plans before it prompts:
-
-```text
-User question -> Rust AskPlan -> focused FactPack -> optional Cognee recall -> optional Qwen refinement
-```
-
-Examples:
-
-```text
-"what my cpu doing"       -> CPU FactPack only
-"what about ram"          -> memory FactPack only
-"what is update service"  -> service/process/database FactPack
-"whats the update"        -> compact server overview
-```
-
-This reduces prompt size, lowers Qwen CPU/RAM pressure, and keeps Rust as the source of truth.
-
-## Cognee memory lifecycle
-
-OSAI now exposes Cognee lifecycle APIs and UI:
-
-```text
-GET  /api/cognee/lifecycle  = memory health/status
-POST /api/cognee/feedback   = remember answer feedback and attempt improve
-POST /api/cognee/forget     = confirmed dataset forget request
-```
-
-The dashboard shows:
-
-```text
-Remember: active through memory outbox and feedback
-Recall: planned by AskPlan only when useful
-Improve: best-effort after operator feedback
-Forget: guarded by confirmation
-```
-
-Before memory is sent to Cognee, secret-like lines containing tokens, passwords, API keys, bearer authorization, access keys, secret keys, or private keys are redacted.
-
-Dependency map:
-
-```text
-osai-agent
-  depends on: no external service for basic dashboard/scanning
-
-osai-storage-worker
-  depends on: osai-agent API, PostgreSQL, RustFS bucket
-
-osai-cognee-ingest
-  depends on: PostgreSQL, Cognee REST API
-
-osai-ask
-  depends on: PostgreSQL, Cognee REST API, llama.cpp/Qwen
-
-cognee container
-  depends on: PostgreSQL, llama Docker service for ingestion/extraction quality
-```
-
-## 1. Prepare environment files
+Copy examples:
 
 ```bash
 cp .env.storage.example .env.storage
 cp .env.cognee.example .env.cognee
 ```
 
-Important config files:
+Edit local values:
 
-```text
-.env.storage = Rust worker config for osai-agent API, PostgreSQL, RustFS, dataset names
-.env.cognee  = Cognee container config plus local llama.cpp/Qwen config
+```bash
+nano .env.storage
+nano .env.cognee
 ```
 
-## 2. Put the Qwen GGUF model in place
+For local development, keep:
 
-Create the local model folder and place your model here:
-
-```text
-models/Qwen3-4B-Q4_K_M.gguf
+```env
+OSAI_AGENT_TOKEN=
+REQUIRE_AUTHENTICATION=false
+ENABLE_BACKEND_ACCESS_CONTROL=false
 ```
 
-The `models/` folder is mounted into the llama.cpp container. The `.gguf` file is intentionally ignored by git because it is large.
+For production or remote dashboard exposure, set a long random token:
 
-Expected path:
+```bash
+export OSAI_AGENT_TOKEN='change-me-long-random-token'
+```
+
+---
+
+## Download Qwen GGUF model
+
+Create the model folder:
+
+```bash
+mkdir -p models
+```
+
+Download the default model:
+
+```bash
+curl -L \
+  -o models/Qwen3-4B-Q4_K_M.gguf \
+  https://huggingface.co/Qwen/Qwen3-4B-GGUF/resolve/main/Qwen3-4B-Q4_K_M.gguf
+```
+
+Verify:
 
 ```bash
 ls -lh models/Qwen3-4B-Q4_K_M.gguf
 ```
 
-If the filename is different, either rename it or update the `llama` service command in both compose files and set `MODEL_FILE` when building the baked image.
+Expected size is roughly a few GB. If the file is tiny, the download failed or was interrupted.
 
-You can also pass another GGUF filename without editing compose:
+If your file is named differently, either rename it:
 
 ```bash
-OSAI_GGUF_MODEL_FILE=Qwen3-4B-IQ3_M.gguf docker compose -f docker-compose.storage.yml up -d --build
-
-MODEL_FILE=Qwen3-4B-IQ3_M.gguf ./scripts/build-llama-model-image.sh
-OSAI_GGUF_MODEL_FILE=Qwen3-4B-IQ3_M.gguf docker compose -f docker-compose.model-image.yml up -d --build
+mv models/qwen3-4B-q4.gguf models/Qwen3-4B-Q4_K_M.gguf
 ```
 
-### Fast Qwen loading rule
+or set the model filename when starting Compose:
 
-For this project, there are now two supported Qwen deployment modes.
-
-Mode A is best for development and local testing:
-
-```text
-runtime image = llama.cpp server only
-model file    = local ./models/Qwen3-4B-Q4_K_M.gguf mounted read-only
-startup       = no runtime download, explicit --mmap
-context       = keep -c modest unless you truly need long context
+```bash
+OSAI_GGUF_MODEL_FILE=qwen3-4B-q4.gguf docker compose -f docker-compose.storage.yml up -d --build
 ```
 
-Mode B is best when you want to push one image to another server:
+---
 
-```text
-runtime image = llama.cpp server plus Qwen GGUF inside image
-model file    = /models/Qwen3-4B-Q4_K_M.gguf inside the container image
-startup       = no runtime download and no host model mount, explicit --mmap
-tradeoff      = image is larger by the model size
-```
+## Start local support stack
 
-Do not bake the GGUF into normal source zips or Git commits. For one server, Mode A is usually simpler. For repeatable deploys across servers, Mode B avoids downloading or copying the model at container startup.
-
-See `docs/qwen3-gguf-loading-footprint.md` for the full deployment note.
-
-## 3. Start Docker Compose services
-
-Choose one llama mode.
-
-### Option A: host-mounted model
+Host-mounted model mode:
 
 ```bash
 docker compose -f docker-compose.storage.yml up -d --build
 ```
 
-This keeps the image small and uses `./models:/models:ro`.
-
-### Option B: Docker image contains the model
-
-Build and run the baked model image:
-
-```bash
-./scripts/build-llama-model-image.sh
-docker compose -f docker-compose.model-image.yml up -d --build
-```
-
-This copies `models/Qwen3-4B-Q4_K_M.gguf` into `osai-llama-qwen-with-model:local`. It still uses llama.cpp `--mmap`, but it does not need a host model mount at runtime.
-
 This starts:
 
 ```text
-osai-postgres    PostgreSQL + pgvector
-osai-rustfs      RustFS object store
-osai-rustfs-init automatic bucket bootstrap for s3://osai-agent
-osai-llama       llama.cpp server running Qwen3 on port 8080
-osai-cognee      Cognee REST API on port 8001
+osai-postgres
+osai-rustfs
+osai-rustfs-init
+osai-llama
+osai-cognee
 ```
 
-Check status:
+Check containers:
 
 ```bash
 docker compose -f docker-compose.storage.yml ps
@@ -346,56 +386,59 @@ docker logs osai-llama --tail 50
 docker logs osai-cognee --tail 50
 ```
 
-Open RustFS console:
+---
 
-```text
-http://127.0.0.1:9001
-username: rustfsadmin
-password: rustfsadmin
-```
+## Build Rust binaries
 
-Open Cognee docs:
-
-```text
-http://127.0.0.1:8001/docs
-```
-
-Test llama.cpp/Qwen:
+Run this after cloning or after applying code changes:
 
 ```bash
-curl http://127.0.0.1:8080/v1/models
-```
-
-Why the endpoints differ:
-
-```text
-Rust host binaries call llama.cpp at:
-  http://127.0.0.1:8080/v1
-
-Cognee container calls llama.cpp through Docker service DNS:
-  http://llama:8080/v1
-```
-
-## 4. Build Rust binaries
-
-```bash
+cargo fmt
 cargo check
 cargo build --release
+```
+
+Where these are used:
+
+```text
+cargo fmt
+  Formats Rust source code. Run this after patches or edits and before commit/build.
+
+cargo check
+  Fast compile/type check. Use it before release build to catch Rust errors quickly.
+
+cargo build --release
+  Builds optimized production binaries under target/release/.
 ```
 
 Release binaries:
 
 ```text
 target/release/osai-agent
+target/release/osai-all
 target/release/osai-storage-worker
 target/release/osai-cognee-ingest
 target/release/osai-ask
 ```
 
-## 5. Start the Rust agent
+---
+
+## Run full local OSAI
+
+Recommended local run:
 
 ```bash
-./target/release/osai-agent --bind 127.0.0.1:8000 --scan-interval-seconds 30
+RUST_LOG=info ./target/release/osai-all
+```
+
+What it does:
+
+```text
+1. Starts Docker support stack
+2. Ensures RustFS bucket exists
+3. Starts osai-agent
+4. Starts osai-storage-worker
+5. Starts osai-cognee-ingest
 ```
 
 Open dashboard:
@@ -404,96 +447,37 @@ Open dashboard:
 http://127.0.0.1:8000
 ```
 
-Basic API checks:
+---
 
-```bash
-curl http://127.0.0.1:8000/api/health
-curl http://127.0.0.1:8000/api/snapshot | jq
-curl http://127.0.0.1:8000/api/history | jq
-```
+## Manual RustFS bucket init command
 
-## 6. Persist scan data into PostgreSQL and RustFS
-
-Run once:
-
-```bash
-./target/release/osai-storage-worker --once
-```
-
-Or use the wrapper:
-
-```bash
-./scripts/run-memory-worker.sh --once
-```
-
-Run continuously:
-
-```bash
-./target/release/osai-storage-worker
-```
-
-This writes:
+Use this command when:
 
 ```text
-PostgreSQL:
-  osai_hosts
-  osai_scan_history
-  osai_findings
-  osai_memory_events
-  osai_cognee_outbox
-
-RustFS:
-  s3://osai-agent/snapshots/<hostname>/<generated-at>/<scan-id>.json
-  s3://osai-agent/memory/scans/<hostname>/<generated-at>/<scan-id>.md
+storage worker logs show NoSuchBucket
+RustFS was recreated
+Docker volume was deleted
+osai-rustfs-init exited too early
+you want to verify the bucket exists before testing Ask OSAI
 ```
 
-The `.json` file is the raw evidence. The `.md` file is the descriptive memory document that humans, Cognee, pgvector/Kuzu, and Qwen can understand more easily.
-
-To rebuild Markdown memory for scans that were already saved before this feature existed, run:
+Command:
 
 ```bash
-./target/release/osai-storage-worker --once --rebuild-memory
+docker compose -f docker-compose.storage.yml run --rm --no-deps rustfs-init
 ```
 
-## 7. Verify PostgreSQL data
+Expected output:
 
-```bash
-docker exec -it osai-postgres psql -U postgres -d osai_agent -c '\dt'
+```text
+waiting for RustFS S3 API
+ensuring bucket: osai-agent
+Bucket created successfully
+RustFS buckets:
+osai-agent/
 ```
 
-Latest scans:
-
-```bash
-docker exec -it osai-postgres psql -U postgres -d osai_agent -c "
-select id, generated_at, hostname, highest_severity, finding_count, object_store_key
-from osai_scan_history
-order by generated_at desc
-limit 5;
-"
-```
-
-Memory/outbox:
-
-```bash
-docker exec -it osai-postgres psql -U postgres -d osai_agent -c "
-select id, scan_id, status, attempt_count, last_error, ingested_at
-from osai_cognee_outbox
-order by id desc
-limit 10;
-"
-```
-
-pgvector extension in Cognee DB:
-
-```bash
-docker exec -it osai-postgres psql -U postgres -d cognee_db -c "
-select extname, extversion from pg_extension where extname = 'vector';
-"
-```
-
-## 8. Verify RustFS data from CLI
-
-Using AWS CLI:
+Verify with AWS CLI, optional:
 
 ```bash
 export AWS_ACCESS_KEY_ID=rustfsadmin
@@ -505,292 +489,304 @@ aws --endpoint-url http://127.0.0.1:9000 s3 ls
 aws --endpoint-url http://127.0.0.1:9000 s3 ls s3://osai-agent/ --recursive
 ```
 
-Read one object:
+---
+
+## API checks
+
+Health:
 
 ```bash
-aws --endpoint-url http://127.0.0.1:9000 s3 cp \
-  s3://osai-agent/<object_store_key_from_postgres> - | jq .
+curl http://127.0.0.1:8000/api/health | jq
 ```
 
-Read generated Markdown memory:
+Snapshot:
 
 ```bash
-aws --endpoint-url http://127.0.0.1:9000 s3 ls s3://osai-agent/memory/scans/ --recursive
-aws --endpoint-url http://127.0.0.1:9000 s3 cp \
-  s3://osai-agent/<memory_markdown_object_key_from_metadata> -
+curl http://127.0.0.1:8000/api/snapshot | jq
 ```
 
-## 9. Ingest pending memory into Cognee
-
-Run once:
+Ask OSAI without Qwen, useful for testing intent path:
 
 ```bash
-./target/release/osai-cognee-ingest --once
+curl -X POST http://127.0.0.1:8000/api/ask \
+  -H 'Content-Type: application/json' \
+  -d '{"question":"what my cpu doing","use_ai":false}' | jq
 ```
 
-Or use the wrapper:
+Ask OSAI with Qwen:
 
 ```bash
-./scripts/run-cognee-ingest.sh --once
+curl -X POST http://127.0.0.1:8000/api/ask \
+  -H 'Content-Type: application/json' \
+  -d '{"question":"what is update on service","use_ai":true}' | jq
 ```
 
-Expected outbox status:
+If token auth is enabled:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/ask \
+  -H "X-OSAI-Token: $OSAI_AGENT_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"question":"what about ram","use_ai":false}' | jq
+```
+
+---
+
+## Test AskPlan + FactPack intent
+
+Use these dashboard questions:
 
 ```text
-ingested
+what my cpu doing
+what about ram
+what is update on service
+whats the update
 ```
 
-Check:
+Expected behavior:
+
+```text
+CPU question      -> CPU intent, CPU facts only
+RAM question      -> Memory intent, memory facts only
+Service question  -> Services/process/database facts only
+General update    -> compact server overview
+```
+
+The UI should show:
+
+```text
+Detected intent
+Data sent to AI
+AI used
+Mode/source
+Manual checks
+```
+
+---
+
+## Common issues
+
+### 1. Qwen3 GGUF model missing or interrupted download
+
+Symptom:
+
+```text
+llama container starts but model load fails
+/api/ask returns llama.cpp/Qwen error
+models/Qwen3-4B-Q4_K_M.gguf does not exist
+file size is too small
+```
+
+Fix:
 
 ```bash
-docker exec -it osai-postgres psql -U postgres -d osai_agent -c "
-select id, scan_id, status, attempt_count, last_error, ingested_at
-from osai_cognee_outbox
-order by id desc
-limit 10;
-"
+mkdir -p models
+rm -f models/Qwen3-4B-Q4_K_M.gguf
+
+curl -L \
+  -o models/Qwen3-4B-Q4_K_M.gguf \
+  https://huggingface.co/Qwen/Qwen3-4B-GGUF/resolve/main/Qwen3-4B-Q4_K_M.gguf
+
+ls -lh models/Qwen3-4B-Q4_K_M.gguf
+docker compose -f docker-compose.storage.yml restart llama
 ```
 
-If it fails, check:
+### 2. After git clone, models folder is empty
+
+This is expected. GGUF files are ignored by Git.
+
+Fix:
 
 ```bash
-docker logs osai-cognee --tail 100
+cd OS.rs
+find . -maxdepth 3 -type d -name models -print
+mkdir -p models
+curl -L \
+  -o models/Qwen3-4B-Q4_K_M.gguf \
+  https://huggingface.co/Qwen/Qwen3-4B-GGUF/resolve/main/Qwen3-4B-Q4_K_M.gguf
 ```
 
-### Cognee remember endpoint detail
-
-Cognee 1.2.x expects `/api/v1/remember` field `data` to be uploaded as a multipart file, not a plain text form field. The Rust `osai-cognee-ingest` binary sends each descriptive Markdown memory row as an in-memory `.md` upload. This matches the manual test below:
+If your Rust project is inside `osai-agent/`, use:
 
 ```bash
-printf "# OSAI Debug\n\nhello from osai debug" > /tmp/osai-debug.md
-curl -i -X POST http://127.0.0.1:8001/api/v1/remember \
-  -F "data=@/tmp/osai-debug.md;type=text/markdown" \
-  -F "datasetName=osai_debug" \
-  -F "run_in_background=false"
+cd OS.rs/osai-agent
+mkdir -p models
+curl -L \
+  -o models/Qwen3-4B-Q4_K_M.gguf \
+  https://huggingface.co/Qwen/Qwen3-4B-GGUF/resolve/main/Qwen3-4B-Q4_K_M.gguf
 ```
 
-If you see `Expected UploadFile, received: <class 'str'>`, rebuild the Rust binaries because an older `osai-cognee-ingest` binary is still sending `data` as text.
+### 3. RustFS says NoSuchBucket
 
-`remember()` can take minutes on CPU because Cognee builds graph/vector memory and calls the local LLM. The worker timeout is controlled by:
+Symptom:
+
+```text
+Server returned non-2xx status code: 404 Not Found
+<Code>NoSuchBucket</Code>
+```
+
+Cause:
+
+```text
+osai-storage-worker tried to upload snapshots before the osai-agent bucket existed.
+```
+
+Fix:
+
+```bash
+docker compose -f docker-compose.storage.yml run --rm --no-deps rustfs-init
+docker compose -f docker-compose.storage.yml restart rustfs
+RUST_LOG=info ./target/release/osai-all
+```
+
+Also verify these match:
 
 ```env
-OSAI_COGNEE_HTTP_TIMEOUT_SECONDS=900
-OSAI_COGNEE_RUN_IN_BACKGROUND=false
-OSAI_COGNEE_CHUNKS_PER_BATCH=10
+OBJECT_STORE_BUCKET=osai-agent
+OBJECT_STORE_ENDPOINT=127.0.0.1:9000
+OBJECT_STORE_ACCESS_KEY=rustfsadmin
+OBJECT_STORE_SECRET_KEY=rustfsadmin
 ```
 
+### 4. Dashboard says token required
 
-## 10. Ask OSAI from browser, CLI, or API
-
-### Browser
-
-Open the dashboard:
+Symptom:
 
 ```text
-http://127.0.0.1:8000
+OSAI dashboard token required to ask osai
 ```
 
-Use the **Ask OSAI** panel. The browser calls:
+Cause:
 
 ```text
-POST /api/ask
+OSAI_AGENT_TOKEN is set, so /api/ask requires X-OSAI-Token.
 ```
 
-Request path:
-
-```text
-Browser
-  -> osai-agent /api/ask
-  -> PostgreSQL latest scan facts
-  -> Cognee /api/v1/recall
-  -> local Markdown guidance from knowledge/
-  -> llama.cpp /v1/chat/completions
-  -> Qwen answer returned to dashboard
-```
-
-Editable answer guidance lives here:
-
-```text
-knowledge/09_inference_reasoning_guidance.md
-```
-
-Use that file to add real issue patterns, response rules, known errors, and service-specific guidance.
-
-### CLI
+Local dev fix:
 
 ```bash
-./target/release/osai-ask "give me update about this server"
+grep OSAI_AGENT_TOKEN .env.storage
+# set it empty:
+# OSAI_AGENT_TOKEN=
 ```
 
-Or:
+Then restart:
 
 ```bash
-./scripts/ask-local-qwen.sh "give me update about this server"
+RUST_LOG=info ./target/release/osai-all
 ```
 
-Request path:
-
-```text
-osai-ask
-  -> PostgreSQL latest scan facts
-  -> Cognee /api/v1/recall
-  -> llama.cpp /v1/chat/completions
-  -> Qwen answer printed in CLI
-```
-
-### API
+Production/API token fix:
 
 ```bash
-curl -X POST http://127.0.0.1:8000/api/ask \
-  -H 'Content-Type: application/json' \
-  -d '{"question":"give me update about this server"}' | jq
+export OSAI_AGENT_TOKEN='your-long-token'
+
+curl -H "X-OSAI-Token: $OSAI_AGENT_TOKEN" \
+  http://127.0.0.1:8000/api/health | jq
 ```
 
-Fast deterministic fallback without Qwen:
+### 5. Cognee recall is slow or failing
+
+Check Cognee and llama first:
 
 ```bash
-curl -X POST http://127.0.0.1:8000/api/reason \
-  -H 'Content-Type: application/json' \
-  -d '{"question":"why is memory high?"}' | jq
+curl http://127.0.0.1:8001/docs
+curl http://127.0.0.1:8080/v1/models
+docker logs osai-cognee --tail 100
+docker logs osai-llama --tail 100
 ```
 
-## Browser, CLI, and API access
+Check `.env.cognee`:
 
-Browser dashboard:
-
-```text
-http://127.0.0.1:8000
+```env
+COGNEE_API_URL=http://127.0.0.1:8001
+COGNEE_API_PREFIX=/api/v1
+COGNEE_DATASET=osai-agent-memory
+OSAI_LLM_ENDPOINT=http://127.0.0.1:8080/v1
+OSAI_LLM_MODEL=osai-llm
 ```
 
-RustFS console:
+For Cognee Cloud, use your tenant API URL and API key.
 
-```text
-http://127.0.0.1:9001
-```
+---
 
-Cognee REST docs:
+## Clean rebuild
 
-```text
-http://127.0.0.1:8001/docs
-```
+Use when old containers, volumes, or binaries are confusing the test.
 
-CLI examples:
+Stop services:
 
 ```bash
-./target/release/osai-storage-worker --once
-./target/release/osai-cognee-ingest --once
-./target/release/osai-ask "what changed on this machine?"
+docker compose -f docker-compose.storage.yml down
 ```
 
-API examples:
-
-```bash
-curl http://127.0.0.1:8000/api/health
-curl http://127.0.0.1:8000/api/snapshot | jq
-curl http://127.0.0.1:8000/api/history | jq
-curl -X POST http://127.0.0.1:8000/api/scan | jq
-curl -X POST http://127.0.0.1:8000/api/ask \
-  -H 'Content-Type: application/json' \
-  -d '{"question":"what is the current server status?"}' | jq
-```
-
-## Expose dashboard outside localhost safely
-
-When binding to `0.0.0.0`, set an API token:
-
-```bash
-export OSAI_AGENT_TOKEN='change-me-long-random-token'
-./target/release/osai-agent --bind 0.0.0.0:8000
-```
-
-API call with token:
-
-```bash
-curl -H "X-OSAI-Token: $OSAI_AGENT_TOKEN" http://127.0.0.1:8000/api/snapshot | jq
-```
-
-## Guarded command executor
-
-The executor validates commands against an allowlist, blocks destructive programs, rejects shell metacharacters, audits actions, and requires approval for repair actions.
-
-Propose a read-only check:
-
-```bash
-curl -X POST http://127.0.0.1:8000/api/actions/propose \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "reason":"check GitLab status",
-    "command":"gitlab-ctl",
-    "args":["status"],
-    "kind":"read_only"
-  }' | jq
-```
-
-Run the returned action id:
-
-```bash
-curl -X POST http://127.0.0.1:8000/api/actions/<action-id>/run | jq
-```
-
-## Important design rules
-
-Do not use Cognee as the only database for system state.
-
-```text
-PostgreSQL = operational source of truth
-RustFS     = raw evidence vault
-Cognee     = AI memory/retrieval layer
-Qwen       = reasoning model, not storage
-Rust       = controller and guardrail layer
-```
-
-Do not send raw RustFS logs directly into Qwen by default. Let Rust curate facts, let Cognee recall relevant memory, and send Qwen a clean prompt.
-
-## Cleaning heavy folders
-
-These folders are generated and should not be committed:
-
-```text
-target/
-.venv-storage/
-data/
-models/*.gguf
-```
-
-Clean Rust build cache:
+Remove generated Rust build output:
 
 ```bash
 cargo clean
 ```
 
-Remove old Python venv if it exists:
+Rebuild and run:
 
 ```bash
-rm -rf .venv-storage scripts/.venv-storage
+cargo fmt
+cargo check
+cargo build --release
+RUST_LOG=info ./target/release/osai-all
 ```
 
-## RPM/systemd packaging
+Do not delete Docker volumes unless you intentionally want to lose PostgreSQL/RustFS/Cognee local data.
 
-Systemd and RPM skeletons remain under:
+---
+
+## Safe remote exposure
+
+Local-only development:
+
+```bash
+./target/release/osai-agent --bind 127.0.0.1:8000 --scan-interval-seconds 30
+```
+
+Remote dashboard:
+
+```bash
+export OSAI_AGENT_TOKEN='change-me-long-random-token'
+./target/release/osai-agent --bind 0.0.0.0:8000 --scan-interval-seconds 30
+```
+
+Firewall and reverse proxy decisions should be handled separately. Do not expose the dashboard publicly without auth.
+
+---
+
+## Important files
 
 ```text
-packaging/systemd/
-packaging/rpm/
+src/main.rs                         API and dashboard server
+src/ask.rs                          /api/ask orchestration
+src/ask_plan.rs                     intent detection
+src/fact_pack.rs                    focused facts for Qwen
+src/bin/osai-all.rs                 full runtime supervisor
+src/bin/osai-storage-worker.rs      PostgreSQL/RustFS persistence
+src/bin/osai-cognee-ingest.rs       Cognee memory ingestion
+docker-compose.storage.yml          local support stack
+scripts/ensure-rustfs-bucket.sh     manual RustFS bucket helper
+.env.storage.example                OSAI DB/object-store config
+.env.cognee.example                 Cognee/Qwen config
+models/                             local GGUF model folder
+web/app.js                          dashboard Ask OSAI UI
 ```
 
-Build RPM on a RHEL-like host:
-
-```bash
-sudo dnf install -y rust cargo rpm-build rsync systemd-rpm-macros
-./scripts/build-rpm.sh
-```
+---
 
 ## References
 
-- Cognee REST API server: https://docs.cognee.ai/guides/deploy-rest-api-server
-- Cognee installation and extras: https://docs.cognee.ai/getting-started/installation
-- Cognee LLM providers: https://docs.cognee.ai/setup-configuration/llm-providers
-- RustFS Docker installation: https://docs.rustfs.com/installation/docker/
+- GitHub clone documentation: https://docs.github.com/articles/cloning-a-repository
+- Git clone documentation: https://git-scm.com/docs/git-clone
+- Cargo documentation: https://doc.rust-lang.org/cargo/
+- cargo fmt documentation: https://doc.rust-lang.org/cargo/commands/cargo-fmt.html
 - Docker Compose services: https://docs.docker.com/reference/compose-file/services/
-- Full OSAI data flow: `docs/rust-to-cognee-to-qwen-data-flow.md`
-- Qwen GGUF loading and footprint guide: `docs/qwen3-gguf-loading-footprint.md`
+- Docker Compose startup order: https://docs.docker.com/compose/how-tos/startup-order/
+- Qwen3-4B GGUF model: https://huggingface.co/Qwen/Qwen3-4B-GGUF
+- Cognee REST API server: https://docs.cognee.ai/guides/deploy-rest-api-server
+- Cognee API reference: https://docs.cognee.ai/api-reference/introduction
+- RustFS Docker installation: https://docs.rustfs.com/installation/docker/
