@@ -8,7 +8,7 @@ It combines:
 
 - a Rust API, dashboard, scanner, workers, and runtime supervisor
 - local LLM inference through `llama.cpp`
-- Qwen reasoning through the exact GGUF model `Qwen3-4B-Q4_K_M.gguf`
+- Qwen reasoning through the exact GGUF model `Qwen3-1.7B-Q8_0.gguf`
 - PostgreSQL for structured metadata and runtime state
 - RustFS for S3-compatible object storage
 - Cognee for persistent memory and contextual retrieval
@@ -92,7 +92,7 @@ OS.rs/
     ├── storage/
     │   └── postgres-init/
     ├── models/
-    │   └── Qwen3-4B-Q4_K_M.gguf
+    │   └── Qwen3-1.7B-Q8_0.gguf
     ├── .env.storage.example
     ├── .env.cognee.example
     ├── .env.storage
@@ -645,7 +645,7 @@ The current Compose service includes:
 ```yaml
 command:
   - "-m"
-  - "/models/${OSAI_GGUF_MODEL_FILE:-Qwen3-4B-Q4_K_M.gguf}"
+  - "/models/${OSAI_GGUF_MODEL_FILE:-Qwen3-1.7B-Q8_0.gguf}"
   - "--mmap"
   - "--host"
   - "0.0.0.0"
@@ -694,7 +694,7 @@ Replace the hard-coded values with:
 
     command:
       - "-m"
-      - "/models/${OSAI_GGUF_MODEL_FILE:-Qwen3-4B-Q4_K_M.gguf}"
+      - "/models/${OSAI_GGUF_MODEL_FILE:-Qwen3-1.7B-Q8_0.gguf}"
       - "--mmap"
       - "--host"
       - "0.0.0.0"
@@ -743,7 +743,7 @@ osai-agent/.env
 ### 2 vCPU / 8 GB RAM
 
 ```dotenv
-OSAI_GGUF_MODEL_FILE=Qwen3-4B-Q4_K_M.gguf
+OSAI_GGUF_MODEL_FILE=Qwen3-1.7B-Q8_0.gguf
 LLAMA_THREADS=2
 LLAMA_THREADS_BATCH=2
 LLAMA_CTX_SIZE=2048
@@ -758,7 +758,7 @@ This is the safest profile for the current `e2-standard-2` VM. If the kernel inv
 ### 4 vCPU / 16 GB RAM
 
 ```dotenv
-OSAI_GGUF_MODEL_FILE=Qwen3-4B-Q4_K_M.gguf
+OSAI_GGUF_MODEL_FILE=Qwen3-1.7B-Q8_0.gguf
 LLAMA_THREADS=4
 LLAMA_THREADS_BATCH=4
 LLAMA_CTX_SIZE=4096
@@ -773,7 +773,7 @@ This is the recommended balanced development profile.
 ### 8 vCPU / 32 GB RAM
 
 ```dotenv
-OSAI_GGUF_MODEL_FILE=Qwen3-4B-Q4_K_M.gguf
+OSAI_GGUF_MODEL_FILE=Qwen3-1.7B-Q8_0.gguf
 LLAMA_THREADS=6
 LLAMA_THREADS_BATCH=8
 LLAMA_CTX_SIZE=8192
@@ -1200,13 +1200,13 @@ Start a new login session after changing group membership.
 
 ```bash
 ls -lh \
-  /opt/osai/OS.rs/osai-agent/models/Qwen3-4B-Q4_K_M.gguf
+  /opt/osai/OS.rs/osai-agent/models/Qwen3-1.7B-Q8_0.gguf
 ```
 
 Check the GGUF header:
 
 ```bash
-dd if=/opt/osai/OS.rs/osai-agent/models/Qwen3-4B-Q4_K_M.gguf \
+dd if=/opt/osai/OS.rs/osai-agent/models/Qwen3-1.7B-Q8_0.gguf \
   bs=4 \
   count=1 \
   2>/dev/null
@@ -1338,7 +1338,7 @@ The command should produce no output.
 # Reference documentation
 
 - [Qwen3-4B GGUF repository](https://huggingface.co/Qwen/Qwen3-4B-GGUF)
-- [Exact Qwen3-4B-Q4_K_M.gguf file](https://huggingface.co/Qwen/Qwen3-4B-GGUF/blob/main/Qwen3-4B-Q4_K_M.gguf)
+- [Exact Qwen3-1.7B-Q8_0.gguf file](https://huggingface.co/Qwen/Qwen3-4B-GGUF/blob/main/Qwen3-1.7B-Q8_0.gguf)
 - [llama.cpp HTTP server documentation](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md)
 - [Docker Compose file reference](https://docs.docker.com/reference/compose-file/)
 - [Docker container resource constraints](https://docs.docker.com/engine/containers/resource_constraints/)
