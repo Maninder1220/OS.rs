@@ -100,7 +100,7 @@ services:
         hard: -1
     command:
       - "-m"
-      - "/models/${OSAI_GGUF_MODEL_FILE:-Qwen3-4B-Q4_K_M.gguf}"
+      - "/models/${OSAI_GGUF_MODEL_FILE:-Qwen3-1.7B-Q8_0.gguf}"
       - "--mmap"
       - "--host"
       - "0.0.0.0"

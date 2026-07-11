@@ -67,9 +67,14 @@ BASE_DIR="${BASE_DIR:-/opt/osai}"
 REPO_DIR="${REPO_DIR:-$BASE_DIR/OS.rs}"
 APP_DIR="${APP_DIR:-$REPO_DIR/osai-agent}"
 
-MODEL_FILE="${MODEL_FILE:-Qwen3-4B-Q4_K_M.gguf}"
-MODEL_URL="${MODEL_URL:-https://huggingface.co/Qwen/Qwen3-4B-GGUF/resolve/main/Qwen3-4B-Q4_K_M.gguf?download=true}"
+MODEL_FILE="${MODEL_FILE:-Qwen3-1.7B-Q8_0.gguf}"
+MODEL_URL="${MODEL_URL:-https://huggingface.co/Qwen/Qwen3-1.7B-GGUF/resolve/main/Qwen3-1.7B-Q8_0.gguf?download=true}"
+MODEL_SHA256="${MODEL_SHA256:-061b54daade076b5d3362dac252678d17da8c68f07560be70818cace6590cb1a}"
 MODEL_DIR="${MODEL_DIR:-$APP_DIR/models}"
+
+# Compatibility filename used by older OSAI/Rust-setter and Compose logic.
+# This is a symbolic link to MODEL_FILE, not a second copy of the model.
+LEGACY_MODEL_FILE="${LEGACY_MODEL_FILE:-Qwen3-4B-Q4_K_M.gguf}"
 
 # FIREWALL_OPEN=1 opens common local app ports in firewalld.
 # Default 0 is safer for cloud VMs.
@@ -747,6 +752,7 @@ download_qwen_model() {
     MODEL_DIR="$MODEL_DIR" \
     MODEL_FILE="$MODEL_FILE" \
     MODEL_URL="$MODEL_URL" \
+    MODEL_SHA256="$MODEL_SHA256" \
     bash <<'OSAI_MODEL_EOF'
 set -Eeuo pipefail
 
@@ -755,26 +761,83 @@ cd "$MODEL_DIR"
 
 if [ -s "$MODEL_FILE" ]; then
   echo "[INFO] Model already exists: $MODEL_DIR/$MODEL_FILE"
-  ls -lh "$MODEL_FILE"
-  exit 0
+  echo "[INFO] Validating the existing model before continuing"
+else
+  echo "[INFO] Downloading model. If interrupted, rerun this script to resume."
+  echo "[INFO] Target: $MODEL_DIR/$MODEL_FILE"
+
+  curl -fL --retry 5 --retry-delay 5 -C - \
+    -o "$MODEL_FILE" \
+    "$MODEL_URL"
 fi
-
-echo "[INFO] Downloading model. If interrupted, rerun this script to resume."
-echo "[INFO] Target: $MODEL_DIR/$MODEL_FILE"
-
-curl -fL --retry 5 --retry-delay 5 -C - \
-  -o "$MODEL_FILE" \
-  "$MODEL_URL"
 
 test -s "$MODEL_FILE"
 
 magic="$(dd if="$MODEL_FILE" bs=4 count=1 2>/dev/null || true)"
 if [ "$magic" != "GGUF" ]; then
-  echo "[WARN] File downloaded, but GGUF magic header was not detected." >&2
+  echo "[ERROR] Downloaded file does not have a GGUF header: $MODEL_FILE" >&2
+  exit 1
+fi
+
+if command -v sha256sum >/dev/null 2>&1 && [ -n "${MODEL_SHA256:-}" ]; then
+  actual_sha256="$(sha256sum "$MODEL_FILE" | awk '{print $1}')"
+  if [ "$actual_sha256" != "$MODEL_SHA256" ]; then
+    echo "[ERROR] SHA-256 mismatch for $MODEL_FILE" >&2
+    echo "[ERROR] Expected: $MODEL_SHA256" >&2
+    echo "[ERROR] Actual:   $actual_sha256" >&2
+    exit 1
+  fi
+  echo "[INFO] SHA-256 verified: $actual_sha256"
 fi
 
 ls -lh "$MODEL_FILE"
 OSAI_MODEL_EOF
+}
+
+# ----------------------------
+# Keep old hard-coded OSAI paths working without storing a second model copy.
+# The Rust readiness setter currently checks Qwen3-4B-Q4_K_M.gguf.
+# ----------------------------
+prepare_model_compatibility_alias() {
+  log "Preparing Qwen model compatibility filename"
+
+  local model_path="$MODEL_DIR/$MODEL_FILE"
+  local legacy_path="$MODEL_DIR/$LEGACY_MODEL_FILE"
+
+  [ -s "$model_path" ] ||
+    die "Model missing: $model_path"
+
+  if [ "$MODEL_FILE" = "$LEGACY_MODEL_FILE" ]; then
+    log "Model filename already matches the compatibility filename"
+    return 0
+  fi
+
+  if [ -L "$legacy_path" ]; then
+    if [ "$(readlink "$legacy_path")" = "$MODEL_FILE" ]; then
+      log "Compatibility symlink already correct: $legacy_path -> $MODEL_FILE"
+    else
+      warn "Replacing incorrect model symlink: $legacy_path"
+      rm -f -- "$legacy_path"
+      ln -s -- "$MODEL_FILE" "$legacy_path"
+    fi
+  elif [ -e "$legacy_path" ]; then
+    local backup_path
+    backup_path="${legacy_path}.backup.$(date '+%Y%m%d%H%M%S')"
+    warn "A regular file already exists at the legacy model path"
+    warn "Moving it to: $backup_path"
+    mv -- "$legacy_path" "$backup_path"
+    ln -s -- "$MODEL_FILE" "$legacy_path"
+  else
+    ln -s -- "$MODEL_FILE" "$legacy_path"
+  fi
+
+  chown -h "$OSAI_USER:$OSAI_USER" "$legacy_path"
+
+  [ -s "$legacy_path" ] ||
+    die "Compatibility model path is not readable: $legacy_path"
+
+  echo "OK   model: $model_path"
+  echo "OK   compatibility alias: $legacy_path -> $(readlink "$legacy_path")"
 }
 
 # ----------------------------
@@ -905,8 +968,18 @@ verify_installation() {
 
   if [ "$DOWNLOAD_MODEL" = "1" ]; then
     check_file_required "$MODEL_DIR/$MODEL_FILE"
+    check_file_required "$MODEL_DIR/$LEGACY_MODEL_FILE"
+
+    if [ -L "$MODEL_DIR/$LEGACY_MODEL_FILE" ] &&
+       [ "$(readlink "$MODEL_DIR/$LEGACY_MODEL_FILE")" = "$MODEL_FILE" ]; then
+      echo "OK   legacy model alias -> $MODEL_FILE"
+    else
+      echo "MISS legacy model alias: $MODEL_DIR/$LEGACY_MODEL_FILE"
+      failed=1
+    fi
   else
     check_file_warn "$MODEL_DIR/$MODEL_FILE"
+    check_file_warn "$MODEL_DIR/$LEGACY_MODEL_FILE"
   fi
 
   sudo -iu "$OSAI_USER" bash <<'OSAI_VERIFY_RUST_EOF' || failed=1
@@ -1163,7 +1236,8 @@ OSAI agent:
   Status:  active
 
 Model:
-  $MODEL_DIR/$MODEL_FILE
+  Real file:           $MODEL_DIR/$MODEL_FILE
+  Compatibility path:  $MODEL_DIR/$LEGACY_MODEL_FILE
 
 Encrypted credentials:
   Store:   $CREDENTIAL_DIR
@@ -1215,6 +1289,7 @@ main() {
   prepare_env_placeholders
   install_and_activate_systemd_credentials
   download_qwen_model
+  prepare_model_compatibility_alias
   open_firewall_ports_optional
   fix_permissions
   verify_installation
