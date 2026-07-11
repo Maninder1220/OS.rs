@@ -24,10 +24,10 @@ echo "Host: $(hostname)"
 #   'part1'\''part2'
 # ============================================================
 set +x
-COGNEE_API_URL_SECRET='https://tenant-f1c286c5-ac43-406e-8fba-28d1ec6d2029.aws.cognee.ai'
-COGNEE_API_KEY_SECRET='f6a927c4ea9200856d3178e32d7f8563cb1c62543f6a0d8617e0fc83b73292e5'
-COGNEE_TENANT_ID_SECRET='f1c286c5-ac43-406e-8fba-28d1ec6d2029'
-COGNEE_USER_ID_SECRET='17437a2f-ecc4-4710-a7ff-3dfcb388abb5'
+COGNEE_API_URL_SECRET='https://your-cognee-tenant-url-fron-cognee-api-page.aws.cognee.ai'
+COGNEE_API_KEY_SECRET='your88cognee88api88key88from88cognee88api88page'
+COGNEE_TENANT_ID_SECRET='your88cognee88tenant88id88from88cognee88api88page'
+COGNEE_USER_ID_SECRET='your88cognee88user88id88from88cognee88api88page'
 OSAI_AGENT_TOKEN_SECRET='2865f44f20686371cdb01d0049f97124bdb97c803c257aa187888c719ebb1b73'
 set -x
 

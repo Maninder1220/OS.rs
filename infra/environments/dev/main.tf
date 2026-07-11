@@ -30,5 +30,5 @@ module "compute_vm" {
   service_account   = module.iam.service_account_email
   enable_public_ip  = var.enable_public_ip
 
-  startup_script_path = "${path.root}/scripts/starters.sh"
+  # startup_script_path = "${path.root}/scripts/starters.sh"
 }
